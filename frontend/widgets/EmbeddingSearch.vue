@@ -819,6 +819,52 @@ onBeforeUnmount(() => {
   flex: 1;
 }
 
+/* Scrollbars: thin rounded thumb tinted from the theme (ZenKit's --zen-scrollbar), transparent
+   track, no arrow buttons. Chromium only drops the arrows through ::-webkit-scrollbar, and it
+   ignores those rules when the standard scrollbar-* properties are set, so the standard
+   properties go to browsers without ::-webkit-scrollbar (Firefox) only. */
+.qe-scroll,
+.qe-frows {
+  --qe-thumb: var(--zen-scrollbar, color-mix(in srgb, var(--zen-text, #e5e5ea) 24%, transparent));
+  --qe-thumb-hover: color-mix(in srgb, var(--zen-text, #e5e5ea) 40%, transparent);
+}
+.qe-scroll::-webkit-scrollbar,
+.qe-frows::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.qe-scroll::-webkit-scrollbar-track,
+.qe-frows::-webkit-scrollbar-track,
+.qe-scroll::-webkit-scrollbar-corner,
+.qe-frows::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.qe-scroll::-webkit-scrollbar-button,
+.qe-frows::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+.qe-scroll::-webkit-scrollbar-thumb,
+.qe-frows::-webkit-scrollbar-thumb {
+  background: var(--qe-thumb);
+  border-radius: 8px;
+  border: 2px solid transparent; /* inset the thumb inside its 8px gutter */
+  background-clip: padding-box;
+}
+.qe-scroll::-webkit-scrollbar-thumb:hover,
+.qe-frows::-webkit-scrollbar-thumb:hover {
+  background: var(--qe-thumb-hover);
+  background-clip: padding-box;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .qe-scroll,
+  .qe-frows {
+    scrollbar-width: thin;
+    scrollbar-color: var(--qe-thumb) transparent;
+  }
+}
+
 /* folders */
 .qe-folders {
   border: 1px solid var(--zen-border);
