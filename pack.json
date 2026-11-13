@@ -1,0 +1,6 @@
+{
+  "namespace": "embeddingquery",
+  "displayName": "Embedding Query",
+  "category": "EmbeddingQuery",
+  "python": { "logPrefix": "[EmbeddingQuery]", "routes": ["_routes"] }
+}

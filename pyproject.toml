@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=70.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-embeddingquery"
+version = "1.0.0"
+description = "Semantic search over ComfyUI input folders with EmbeddingGemma 2: text and images in one space, on one node."
+authors = [{ name = "Nynxz", email = "contact@nynxz.com" }]
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.comfy]
+PublisherId = "nynxz"
+DisplayName = "Embedding Query"
+includes = ["web"]
+
+[tool.setuptools.package-data]
+"*" = ["*.*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["web", "reference", "node_modules", "__pycache__"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort (import sorting)
+    "UP",  # pyupgrade (modern syntax)
+    "B",   # flake8-bugbear (likely bugs)
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "BLE", # flake8-blind-except (the `# noqa: BLE001` sites opt into this)
+    "RUF", # ruff-specific rules
+]
+# `ruff format` owns code line width; E501 only fires on comments/docstrings it
+# deliberately leaves alone, so linting it here is just noise.
+ignore = ["E501"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint.per-file-ignores]
+# sets sys.argv / sys.path before importing comfy, on purpose
+"tests/*" = ["E402", "E731", "SIM115"]
