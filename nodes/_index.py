@@ -7,10 +7,12 @@ never double-count and each can be searched or skipped on its own. A file's ref 
 
 Indexes live outside both roots, in `<user>/embeddingquery/indexes/<model>/<id>.{json,npy}`:
 
-    json  {version, folder, model, dim, updated, items: [{name, kind, size, mtime}], failed: [..]}
+    json  {version, folder, model, dim, detail, updated, items: [{name, kind, size, mtime}], failed}
     npy   float16 [len(items), 768], L2-normalised, row i = items[i]
 
-Re-indexing is incremental: rows of files whose size and mtime are unchanged are kept.
+Re-indexing is incremental: rows of files whose size and mtime are unchanged are kept. `detail` is
+the image token budget the index was built with (280 / 140 / 70); an index is only ever one
+detail, so re-indexing at another detail rebuilds it.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from . import _runtime as rt
 VERSION = 1
 SKIP_DIRS = {"__pycache__", "node_modules"}
 MAX_DEPTH = 8
-SAVE_EVERY = 32  # files embedded between partial saves, so a cancelled run keeps its work
+SAVE_SECONDS = 15  # partial saves while indexing, so a cancelled or interrupted run keeps its work
 
 
 ROOTS = {
@@ -158,6 +160,7 @@ class Index:
     emb: np.ndarray = field(default_factory=lambda: np.zeros((0, 768), np.float16))
     failed: list[str] = field(default_factory=list)
     updated: float = 0.0
+    detail: int = rt.DEFAULT_DETAIL
 
 
 _LOADED: dict[tuple[str, str], tuple[float, Index]] = {}
@@ -208,7 +211,15 @@ def read_index(model: str, folder: str) -> Index | None:
         return None
     if meta.get("version") != VERSION or len(meta["items"]) != len(emb):
         return None
-    idx = Index(folder, model, meta["items"], emb, meta.get("failed", []), meta.get("updated", 0))
+    idx = Index(
+        folder,
+        model,
+        meta["items"],
+        emb,
+        meta.get("failed", []),
+        meta.get("updated", 0),
+        int(meta.get("detail", rt.DEFAULT_DETAIL)),  # indexes from before the option were 280
+    )
     with _LOADED_LOCK:
         _LOADED[key] = (mtime, idx)
     return idx
@@ -228,6 +239,7 @@ def write_index(idx: Index) -> None:
         "model": idx.model,
         "dim": int(idx.emb.shape[1]) if idx.emb.ndim == 2 else 768,
         "updated": idx.updated,
+        "detail": idx.detail,
         "items": idx.items,
         "failed": idx.failed,
     }
@@ -269,6 +281,7 @@ def status(model: str, folder: str, files: dict | None = None) -> dict:
         "removed": removed,
         "failed": len(idx.failed),
         "updated": idx.updated,
+        "detail": idx.detail,
     }
 
 
@@ -278,12 +291,19 @@ def build(
     full: bool = False,
     progress=None,
     should_stop=lambda: False,
-    batch: int = 16,
+    detail: int = rt.DEFAULT_DETAIL,
+    batch: int | None = None,
 ) -> Index:
-    """(Re)index one folder. `progress(done, total, name)`; `should_stop()` ends early, keeping the
-    rows embedded so far."""
+    """(Re)index one folder at image `detail`. `progress(done, total, name)`; `should_stop()` ends
+    early, keeping the rows embedded so far.
+
+    Pipelined: while the model embeds one batch, the next is decoded on the prep thread pool."""
+    detail = detail if detail in rt.DETAILS else rt.DEFAULT_DETAIL
+    batch = batch or rt.index_batch_size(loaded)
     files = list_files(folder)
     old = None if full else read_index(loaded.name, folder)
+    if old is not None and old.detail != detail:
+        old = None  # one index is one detail: a change rebuilds it
     keep_items, keep_rows = [], []
     if old is not None:
         for row, it in enumerate(old.items):
@@ -298,23 +318,31 @@ def build(
     items = list(keep_items)
     rows = [old.emb[keep_rows].astype(np.float32)] if old is not None and keep_rows else []
     failed: list[str] = []
-    since_save = 0
+    last_save = time.monotonic()
 
     def snapshot() -> Index:
         emb = np.concatenate(rows) if rows else np.zeros((0, 768), np.float32)
-        return Index(folder, loaded.name, list(items), emb.astype(np.float16), list(failed))
+        return Index(
+            folder, loaded.name, list(items), emb.astype(np.float16), list(failed), detail=detail
+        )
+
+    def prepare(start: int):
+        names = todo[start : start + batch]
+        kinds = [files[n][0] for n in names]
+        return names, rt.prepare_files(
+            loaded, [os.path.join(base, n) for n in names], kinds, detail
+        )
 
     total = len(todo)
     if progress:
         progress(0, total, "")
+    pending = prepare(0) if total else None
     for s in range(0, total, batch):
-        if should_stop():
+        if should_stop() or not rt.wait_for_idle_queue(should_stop=should_stop):
             break
-        if not rt.wait_for_idle_queue(should_stop=should_stop):
-            break
-        names = todo[s : s + batch]
-        kinds = [files[n][0] for n in names]
-        vecs = rt.encode_files(loaded, [os.path.join(base, n) for n in names], kinds)
+        names, prepared = pending
+        pending = prepare(s + batch) if s + batch < total else None  # decode ahead
+        vecs = rt.encode_prepared(loaded, prepared.result())
         ok = np.isfinite(vecs).all(axis=1)
         for n, good in zip(names, ok, strict=True):
             if good:
@@ -323,10 +351,9 @@ def build(
             else:
                 failed.append(n)
         rows.append(vecs[ok])
-        since_save += len(names)
-        if since_save >= SAVE_EVERY:
+        if time.monotonic() - last_save > SAVE_SECONDS:
             write_index(snapshot())
-            since_save = 0
+            last_save = time.monotonic()
         if progress:
             progress(min(s + batch, total), total, names[-1])
     idx = snapshot()

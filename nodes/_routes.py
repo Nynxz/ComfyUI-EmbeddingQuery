@@ -2,7 +2,7 @@
 
 GET  models                      {"models": [name]}
 GET  folders?model=              {"folders": [{path, images, texts, status}], "job": {...}}
-POST index   {model, folders, full?}   queue folders for (re)indexing
+POST index   {model, folders, full?, detail?}   queue folders for (re)indexing
 POST index/cancel                stop the running job, drop the queue
 POST index/delete {model, folder}
 GET  job                         the indexing job's state (also pushed as `embeddingquery.index`)
@@ -43,7 +43,7 @@ EVENT = "embeddingquery.index"
 class Indexer:
     def __init__(self):
         self.lock = threading.Lock()
-        self.queue: list[tuple[str, str, bool]] = []
+        self.queue: list[tuple[str, str, bool, int]] = []  # (model, folder, full, detail)
         self.thread: threading.Thread | None = None
         self.stop = False
         self.state = {
@@ -58,19 +58,19 @@ class Indexer:
 
     def snapshot(self) -> dict:
         with self.lock:
-            return {**self.state, "queued": [f for _, f, _ in self.queue]}
+            return {**self.state, "queued": [q[1] for q in self.queue]}
 
     def _push(self, **kw):
         with self.lock:
             self.state.update(kw)
         send(EVENT, self.snapshot())
 
-    def enqueue(self, model: str, folders: list[str], full: bool) -> None:
+    def enqueue(self, model: str, folders: list[str], full: bool, detail: int) -> None:
         with self.lock:
             current = self.state["folder"] if self.state["running"] else None
             for f in folders:
                 if f != current and all(q[1] != f for q in self.queue):
-                    self.queue.append((model, f, full))
+                    self.queue.append((model, f, full, detail))
             self.stop = False
             if self.thread is None or not self.thread.is_alive():
                 self.thread = threading.Thread(
@@ -91,7 +91,7 @@ class Indexer:
                 if not self.queue:
                     self.state.update(running=False, folder=None)
                     break
-                model, folder, full = self.queue.pop(0)
+                model, folder, full, detail = self.queue.pop(0)
                 self.state.update(running=True, folder=folder, done=0, total=0, error=None)
             send(EVENT, self.snapshot())
             label = folder
@@ -109,7 +109,12 @@ class Indexer:
                         self._push(done=done, total=total)
 
                 idx = ix.build(
-                    loaded, folder, full=full, progress=progress, should_stop=lambda: self.stop
+                    loaded,
+                    folder,
+                    full=full,
+                    progress=progress,
+                    should_stop=lambda: self.stop,
+                    detail=detail,
                 )
                 job.done()
                 print(
@@ -217,7 +222,10 @@ if routes is not None:
                 ix.folder_abs(f)
         except ValueError as e:
             return _bad(str(e))
-        INDEXER.enqueue(model, list(folders_), bool(body.get("full")))
+        detail = int(body.get("detail", rt.DEFAULT_DETAIL))
+        if detail not in rt.DETAILS:
+            return _bad(f"detail must be one of {rt.DETAILS}")
+        INDEXER.enqueue(model, list(folders_), bool(body.get("full")), detail)
         return web.json_response(INDEXER.snapshot())
 
     @routes.post(route("index/cancel"))

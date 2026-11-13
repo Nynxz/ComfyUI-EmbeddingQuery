@@ -90,7 +90,13 @@ from PIL).
   are cut at 2048 tokens. Queries get `task: search result | query: `.
 - Indexing and live search run outside the prompt queue. They pause while a prompt runs, so they
   never compete with a generation for the GPU.
-- Ranking can use a Matryoshka-truncated 512/256/128-d embedding (the selector next to top-k).
+- Indexing decodes the next batch on a thread pool while the model embeds the current one, in
+  batches of 32 on a GPU.
+- **Image detail** (cog → *Image detail*): 280 tokens per image (the model's default), 140 or 70.
+  Lower indexes much faster (about 3× and 8× in testing) and matches less precisely. Each index
+  records its detail; a folder indexed at another detail shows it on its pill, and a click rebuilds
+  it. Image queries use the same setting.
+- Ranking can use a Matryoshka-truncated 512/256/128-d embedding (cog → *Ranking dims*).
 
 To make a library searchable, symlink it into `input/`. Symlinked folders are followed.
 

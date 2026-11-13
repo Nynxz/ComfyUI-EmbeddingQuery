@@ -16,6 +16,8 @@ export interface SearchState {
   similar: string[];
   /** How several query vectors become one ranking: centroid, best-of, or one joint sequence. */
   combine: Combine;
+  /** Image detail for indexing and image queries: 280 (model default) / 140 / 70 soft tokens. */
+  detail: number;
 }
 
 export interface FolderStatus {
@@ -26,6 +28,8 @@ export interface FolderStatus {
   removed?: number;
   failed?: number;
   updated?: number;
+  /** Image detail (soft tokens per image) the index was built with. */
+  detail?: number;
 }
 
 export interface FolderRow {
@@ -85,8 +89,8 @@ export const listFolders = async (model: string) =>
     await fetch(routeUrl("folders") + "?model=" + encodeURIComponent(model)),
   );
 
-export const startIndex = async (model: string, folders: string[], full = false) =>
-  json<JobState>(await post("index", { model, folders, full }));
+export const startIndex = async (model: string, folders: string[], full = false, detail = 280) =>
+  json<JobState>(await post("index", { model, folders, full, detail }));
 
 export const cancelIndex = async () => json<JobState>(await post("index/cancel", {}));
 

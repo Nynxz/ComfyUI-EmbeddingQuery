@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import comfy.model_management as mm
@@ -158,6 +159,7 @@ class Query:
     text: str = ""
     images: list[torch.Tensor] | None = None  # [H, W, C] each
     prefix: str = eg.QUERY_PREFIX
+    detail: int = 280  # image soft tokens; match the index being searched
 
 
 # ----- encoding --------------------------------------------------------------------------------
@@ -188,7 +190,9 @@ def _encode_queries(loaded: Loaded, queries: list[Query]) -> np.ndarray:
         text = q.text.strip()
         text_ids = loaded.tokenizer.ids(q.prefix + text, MAX_TEXT_TOKENS) if text else []
         if q.images:
-            soft = loaded.model.embed_images([eg.prepare_image(i) for i in q.images], device)
+            soft = loaded.model.embed_images(
+                [eg.prepare_image(i, q.detail) for i in q.images], device
+            )
             seq: list = [eg.BOS]
             for s in soft:
                 seq += [eg.BOI, s, eg.EOI]
@@ -198,38 +202,82 @@ def _encode_queries(loaded: Loaded, queries: list[Query]) -> np.ndarray:
     return loaded.model(seqs, device).cpu().numpy()
 
 
+DETAILS = (280, 140, 70)  # image soft tokens: the model's default, then 2x / 4x fewer
+DEFAULT_DETAIL = 280
+_PREP_POOL = ThreadPoolExecutor(
+    max_workers=min(8, os.cpu_count() or 4), thread_name_prefix="eq-prep"
+)
+
+
+def _prepare_one(loaded: Loaded, path: str, kind: str, detail: int):
+    """CPU side of embedding one file: an image tensor sized to the token budget, or text token
+    ids. None when the file can't be read (it's recorded as failed)."""
+    try:
+        if kind == "image":
+            return eg.prepare_image(read_image(path), detail)
+        ids = loaded.tokenizer.ids(eg.DOCUMENT_PREFIX + read_text(path), MAX_TEXT_TOKENS)
+        return eg.text_sequence(ids)
+    except Exception as e:  # noqa: BLE001 — one bad file must not stop an index
+        print(f"{LOG} skipped {path}: {e}")
+        return None
+
+
+class PreparedBatch:
+    """A batch being decoded on the thread pool; `result()` waits for all of it, in order. The
+    caller waits, not a pool task, so batches queued ahead can never deadlock the pool."""
+
+    def __init__(self, futures):
+        self.futures = futures
+
+    def result(self) -> list:
+        return [f.result() for f in self.futures]
+
+
+def prepare_files(
+    loaded: Loaded, paths: list[str], kinds: list[str], detail: int = DEFAULT_DETAIL
+) -> PreparedBatch:
+    """Decode and size a batch on a thread pool (PIL releases the GIL while decoding), so the next
+    batch can be prepared while the model runs this one."""
+    return PreparedBatch(
+        [
+            _PREP_POOL.submit(_prepare_one, loaded, p, k, detail)
+            for p, k in zip(paths, kinds, strict=True)
+        ]
+    )
+
+
 @torch.inference_mode()
-def encode_files(loaded: Loaded, paths: list[str], kinds: list[str]) -> np.ndarray:
-    """Documents: images as-is, text files with the document prefix. Unreadable files embed as
-    NaN rows, which the index records as failed."""
+def encode_prepared(loaded: Loaded, prepared: list) -> np.ndarray:
+    """Embed a prepared batch (images as-is, texts with the document prefix). Files that couldn't
+    be prepared come back as NaN rows, which the index records as failed."""
     while _query_waiters:  # let waiting searches go first
         time.sleep(0.02)
     with MODEL_LOCK:
         device = _device(loaded)
-        out = np.full((len(paths), eg.EMBEDDING_DIM), np.nan, dtype=np.float32)
-        img_idx, pixels, text_idx, text_seqs = [], [], [], []
-        for i, (p, k) in enumerate(zip(paths, kinds, strict=True)):
-            try:
-                if k == "image":
-                    pixels.append(eg.prepare_image(read_image(p)))
-                    img_idx.append(i)
-                else:
-                    ids = loaded.tokenizer.ids(eg.DOCUMENT_PREFIX + read_text(p), MAX_TEXT_TOKENS)
-                    text_seqs.append(eg.text_sequence(ids))
-                    text_idx.append(i)
-            except Exception as e:  # noqa: BLE001 — one bad file must not stop an index
-                print(f"{LOG} skipped {p}: {e}")
+        out = np.full((len(prepared), eg.EMBEDDING_DIM), np.nan, dtype=np.float32)
+        img_idx = [i for i, x in enumerate(prepared) if isinstance(x, torch.Tensor)]
+        text_idx = [i for i, x in enumerate(prepared) if isinstance(x, list)]
         if img_idx:
-            soft = loaded.model.embed_images(pixels, device)
+            soft = loaded.model.embed_images([prepared[i] for i in img_idx], device)
             out[img_idx] = loaded.model([eg.image_sequence(s) for s in soft], device).cpu().numpy()
         if text_idx:
             # similar lengths together keeps padding small
-            order = sorted(range(len(text_seqs)), key=lambda j: len(text_seqs[j]))
+            order = sorted(text_idx, key=lambda i: len(prepared[i]))
             for s in range(0, len(order), 8):
                 chunk = order[s : s + 8]
-                vecs = loaded.model([text_seqs[j] for j in chunk], device).cpu().numpy()
-                out[[text_idx[j] for j in chunk]] = vecs
+                out[chunk] = loaded.model([prepared[i] for i in chunk], device).cpu().numpy()
         return out
+
+
+def encode_files(
+    loaded: Loaded, paths: list[str], kinds: list[str], detail: int = DEFAULT_DETAIL
+) -> np.ndarray:
+    return encode_prepared(loaded, prepare_files(loaded, paths, kinds, detail).result())
+
+
+def index_batch_size(loaded: Loaded) -> int:
+    """Files per model call while indexing: bigger on a GPU, where the model is cheap per item."""
+    return 32 if loaded.patcher.load_device.type == "cuda" else 16
 
 
 # ----- sharing the GPU with the prompt queue -----------------------------------------------------

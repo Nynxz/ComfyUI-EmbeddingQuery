@@ -41,6 +41,7 @@ DEFAULT_STATE = {
     "selected": None,
     "similar": [],
     "combine": "mean",
+    "detail": rt.DEFAULT_DETAIL,
 }
 
 COMBINE = ("mean", "any", "joint")
@@ -68,6 +69,8 @@ def _state(raw) -> dict:
     s["similar"] = (
         [sim] if isinstance(sim, str) and sim else [r for r in (sim or []) if isinstance(r, str)]
     )
+    if s["detail"] not in rt.DETAILS:
+        s["detail"] = rt.DEFAULT_DETAIL
     if s["combine"] not in COMBINE:
         s["combine"] = "mean"
     s["top_k"] = max(1, min(int(s["top_k"] or 24), 500))
@@ -91,9 +94,10 @@ def _encode_query(s: dict, image, text: str):
     images = [image[i] for i in range(int(image.shape[0]))] if image is not None else []
     if s["combine"] == "joint":
         return rt.encode_queries(
-            loaded, [rt.Query(text=text, images=images[:MAX_JOINT_IMAGES] or None)]
+            loaded,
+            [rt.Query(text=text, images=images[:MAX_JOINT_IMAGES] or None, detail=s["detail"])],
         )
-    queries = [rt.Query(images=[im]) for im in images[:MAX_QUERY_IMAGES]]
+    queries = [rt.Query(images=[im], detail=s["detail"]) for im in images[:MAX_QUERY_IMAGES]]
     if text.strip():
         queries.append(rt.Query(text=text))
     out = [rt.encode_queries(loaded, queries[i : i + 8]) for i in range(0, len(queries), 8)]

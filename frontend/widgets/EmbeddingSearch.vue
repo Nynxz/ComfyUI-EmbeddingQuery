@@ -5,7 +5,6 @@
     :gap="6"
     pad="2px"
     class="qe"
-    v-bind="wheel.attrs"
   >
     <!-- query -->
     <div class="qe-query">
@@ -83,7 +82,8 @@
         <i class="mdi mdi-alert-circle-outline" /> {{ job.error }}
       </div>
 
-      <div v-if="foldersOpen" class="qe-frows">
+      <!-- v-bind wheelScroll: wheel scrolls the list instead of zooming the canvas (lib/wheelScroll.ts) -->
+      <div v-if="foldersOpen" class="qe-frows" v-bind="wheelScroll">
         <div v-if="!models.length" class="qe-hint">
           No model found. Download
           <a href="https://huggingface.co/nynxz/embeddinggemma-2/blob/main/text_encoders/embeddinggemma_2_bf16.safetensors" target="_blank" rel="noopener">embeddinggemma_2_bf16.safetensors</a>
@@ -127,7 +127,7 @@
             v-if="pillText(row)"
             class="qe-pill"
             :class="[pillClass(row), { act: pillActs(row) }]"
-            :title="pillTitle(row) + (pillActs(row) ? '\nClick to ' + (row.status.state === 'stale' ? 'update' : 'index') : '')"
+            :title="pillTitle(row) + (pillActs(row) ? '\nClick to ' + ({ stale: 'update', detail: 'rebuild', none: 'index', ready: '' })[rowState(row)] : '')"
             :disabled="!pillActs(row)"
             @click="indexFolders([row.path])"
           >
@@ -147,15 +147,19 @@
         <ZenPopover v-model:open="menu.open" :anchor="menu.anchor ?? undefined" placement="bottom-end">
           <template v-if="menuRow">
             <ZenMenuItem
-              v-if="menuRow.status.state !== 'ready'"
+              v-if="rowState(menuRow) !== 'ready'"
               icon="mdi mdi-database-plus-outline"
               :disabled="isQueued(menuRow.path)"
               @select="menuDo(() => indexFolders([menuRow!.path]))"
             >
-              {{ menuRow.status.state === "stale" ? `Update (${pillText(menuRow)})` : "Index folder" }}
+              {{
+                { stale: `Update (${pillText(menuRow)})`, detail: `Rebuild at detail ${state.detail}`, none: "Index folder", ready: "" }[
+                  rowState(menuRow)
+                ]
+              }}
             </ZenMenuItem>
             <ZenMenuItem
-              v-if="menuRow.status.state !== 'none'"
+              v-if="menuRow.status.state !== 'none' && rowState(menuRow) !== 'detail'"
               icon="mdi mdi-database-refresh-outline"
               :disabled="isQueued(menuRow.path)"
               @select="menuDo(() => indexFolders([menuRow!.path], true))"
@@ -180,7 +184,7 @@
 
     <!-- results -->
     <div ref="resultsEl" class="qe-results">
-      <div class="qe-scroll">
+      <div ref="scrollEl" class="qe-scroll" v-bind="wheelScroll">
       <div v-if="hits.length" class="qe-grid" :style="{ gridTemplateColumns: `repeat(${cols}, 1fr)` }">
         <button
           v-for="h in hits"
@@ -188,6 +192,7 @@
           class="qe-hit"
           :class="{ picked: h.ref === state.selected, auto: !state.selected && h.ref === autoPick }"
           :title="`${h.ref}\nscore ${h.score.toFixed(3)}${!state.selected && h.ref === autoPick ? '\nOutput of the last run (top result, nothing pinned)' : ''}`"
+          @mousedown.prevent
           @click="pick(h.ref)"
         >
           <img v-if="h.kind === 'image'" :src="thumbUrl(h.ref, thumbSize)" loading="lazy" draggable="false" />
@@ -275,6 +280,15 @@
             />
           </label>
           <label class="qe-set-row">
+            <span>Image detail</span>
+            <ZenSelect
+              sm
+              :model-value="String(state.detail)"
+              :options="DETAIL_OPTS"
+              @update:model-value="set({ detail: Number($event) })"
+            />
+          </label>
+          <label class="qe-set-row">
             <span>Ranking dims</span>
             <ZenSelect
               sm
@@ -288,6 +302,11 @@
             <b>mean</b> finds what they have in common, <b>any</b> finds things like any one of
             them, <b>joint</b> lets the model read them together (wired inputs only, up to 16
             images).
+          </p>
+          <p class="qe-set-hint">
+            <b>Image detail</b>: tokens per image when indexing and for image queries. Lower is
+            faster to index but matches less precisely. Folders indexed at another detail show it
+            on their pill; click to rebuild.
           </p>
           <p class="qe-set-hint">
             768 is the most accurate. Smaller sizes (Matryoshka) rank slightly faster and looser; the
@@ -321,10 +340,9 @@ export const nodeDef: Omit<NodeDef, "widgets"> = {
 </script>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { api } from "@comfy/api";
 import {
-  useWheelClaim,
   ZenDot,
   ZenEmpty,
   ZenIconButton,
@@ -338,6 +356,7 @@ import {
   ZenWidget,
 } from "@nynxz/zenkit-ui";
 
+import { rearmIfHovered, wheelScroll } from "@/lib/wheelScroll";
 import {
   cancelIndex as apiCancel,
   deleteIndex,
@@ -389,11 +408,15 @@ const COMBINE_OPTS = [
   { value: "any", label: "Any (OR)" },
   { value: "joint", label: "Joint (together)" },
 ];
+const DETAIL_OPTS = [
+  { value: "280", label: "High (280)" },
+  { value: "140", label: "Medium (140, ~2x faster)" },
+  { value: "70", label: "Fast (70, ~4x faster)" },
+];
 const DIM_OPTS = ["768", "512", "256", "128"].map((d) => ({ value: d, label: d }));
 const IMAGE_EXT = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i;
 
 const rootEl = ref<{ el: HTMLElement | null } | null>(null);
-const wheel = useWheelClaim();
 
 // ----- state (the widget value) -------------------------------------------------------------
 
@@ -407,6 +430,7 @@ const DEFAULTS: SearchState = {
   selected: null,
   similar: [],
   combine: "mean",
+  detail: 280,
 };
 function toState(v: unknown): SearchState {
   const o = v && typeof v === "object" ? (v as Partial<SearchState>) : {};
@@ -415,6 +439,7 @@ function toState(v: unknown): SearchState {
     ...o,
     similar: typeof o.similar === "string" ? [o.similar] : Array.isArray(o.similar) ? o.similar.filter((r) => typeof r === "string") : [],
     combine: ["mean", "any", "joint"].includes(o.combine as string) ? (o.combine as Combine) : "mean",
+    detail: [280, 140, 70].includes(Number(o.detail)) ? Number(o.detail) : 280,
     folders: Array.isArray(o.folders)
       ? [...new Set(o.folders.filter((f) => typeof f === "string").map(normalizeFolder))]
       : [],
@@ -493,14 +518,14 @@ function setOn(p: string, on: boolean) {
   const folders = on ? [...new Set([...state.folders, p])] : state.folders.filter((f) => f !== p);
   set({ folders });
   const row = folderRows.value.find((r) => r.path === p);
-  if (on && row && row.status.state !== "ready" && row.images + row.texts) void indexFolders([p]);
+  if (on && row && rowState(row) !== "ready" && row.images + row.texts) void indexFolders([p]);
 }
 const isQueued = (p: string) => (job.value.running && job.value.folder === p) || job.value.queued.includes(p);
 
 const needsIndex = computed(
   () =>
     folderRows.value.filter(
-      (r) => isOn(r.path) && r.status.state !== "ready" && r.images + r.texts > 0 && !isQueued(r.path),
+      (r) => isOn(r.path) && rowState(r) !== "ready" && r.images + r.texts > 0 && !isQueued(r.path),
     ).length,
 );
 const folderSummary = computed(() => {
@@ -532,26 +557,36 @@ function menuDo(fn: () => unknown) {
   void fn();
 }
 /** The pill indexes / updates on click when there's something to do and nothing queued. */
-const pillActs = (r: FolderRow) => r.status.state !== "ready" && r.images + r.texts > 0 && !isQueued(r.path);
+const pillActs = (r: FolderRow) => rowState(r) !== "ready" && r.images + r.texts > 0 && !isQueued(r.path);
 
+/** The row's state for THIS node: an index built at another image detail needs rebuilding. */
+type RowState = "none" | "ready" | "stale" | "detail";
+function rowState(r: FolderRow): RowState {
+  const s = r.status.state;
+  if (s !== "none" && (r.status.detail ?? 280) !== state.detail) return "detail";
+  return s;
+}
 function pillClass(r: FolderRow) {
   if (isQueued(r.path)) return "info";
-  return { ready: "ok", stale: "warn", none: "" }[r.status.state];
+  return { ready: "ok", stale: "warn", detail: "warn", none: "" }[rowState(r)];
 }
 function pillText(r: FolderRow) {
   if (job.value.running && job.value.folder === r.path)
     return job.value.total ? `${Math.round(jobPct.value)}%` : "…";
   if (job.value.queued.includes(r.path)) return "queued";
   const s = r.status;
-  if (s.state === "ready") return "indexed";
-  if (s.state === "stale") return `+${(s.new ?? 0) + (s.changed ?? 0)}${s.removed ? ` −${s.removed}` : ""}`;
+  const st = rowState(r);
+  if (st === "detail") return `detail ${s.detail ?? 280}`;
+  if (st === "ready") return "indexed";
+  if (st === "stale") return `+${(s.new ?? 0) + (s.changed ?? 0)}${s.removed ? ` −${s.removed}` : ""}`;
   return r.images + r.texts ? "no index" : "";
 }
 function pillTitle(r: FolderRow) {
   const s = r.status;
   if (s.state === "none") return "Not indexed";
   const when = s.updated ? new Date(s.updated * 1000).toLocaleString() : "";
-  const parts = [`${s.indexed} files indexed ${when}`];
+  const parts = [`${s.indexed} files indexed ${when}, image detail ${s.detail ?? 280}`];
+  if (rowState(r) === "detail") parts.push(`This node uses detail ${state.detail}: rebuild to match`);
   if (s.state === "stale") parts.push(`${s.new ?? 0} new, ${s.changed ?? 0} changed, ${s.removed ?? 0} removed`);
   if (s.failed) parts.push(`${s.failed} could not be read`);
   return parts.join("\n");
@@ -571,7 +606,7 @@ async function refreshFolders() {
 }
 async function indexFolders(paths: string[], full = false) {
   try {
-    job.value = await startIndex(state.model, paths, full);
+    job.value = await startIndex(state.model, paths, full, state.detail);
   } catch (e) {
     error.value = String((e as Error).message ?? e);
   }
@@ -579,7 +614,7 @@ async function indexFolders(paths: string[], full = false) {
 function indexSearched() {
   void indexFolders(
     folderRows.value
-      .filter((r) => isOn(r.path) && r.status.state !== "ready" && r.images + r.texts > 0)
+      .filter((r) => isOn(r.path) && rowState(r) !== "ready" && r.images + r.texts > 0)
       .map((r) => r.path),
   );
 }
@@ -675,6 +710,10 @@ function toggleSimilar(ref: string, add: boolean) {
   else set({ similar: has && state.similar.length === 1 ? [] : [ref] });
 }
 
+// New results under a resting pointer: keep the wheel on the grid (see lib/wheelScroll.ts).
+const scrollEl = ref<HTMLElement | null>(null);
+watch(hits, () => void nextTick(() => rearmIfHovered(scrollEl.value)), { flush: "post" });
+
 // text snippets, loaded once per visible text hit
 const snippets = reactive<Record<string, string>>({});
 watch(hits, (list) => {
@@ -744,7 +783,6 @@ onMounted(() => {
       readLinks();
     };
   }
-  wheel.el.value = rootEl.value?.el ?? null;
   if (resultsEl.value && typeof ResizeObserver !== "undefined") {
     ro = new ResizeObserver(() => (boxWidth.value = resultsEl.value?.clientWidth ?? boxWidth.value));
     ro.observe(resultsEl.value);
@@ -826,6 +864,10 @@ onBeforeUnmount(() => {
    track, no arrow buttons. Chromium only drops the arrows through ::-webkit-scrollbar, and it
    ignores those rules when the standard scrollbar-* properties are set, so the standard
    properties go to browsers without ::-webkit-scrollbar (Firefox) only. */
+.qe-scroll:focus,
+.qe-frows:focus {
+  outline: none;
+}
 .qe-scroll,
 .qe-frows {
   --qe-thumb: var(--zen-scrollbar, color-mix(in srgb, var(--zen-text, #e5e5ea) 24%, transparent));
