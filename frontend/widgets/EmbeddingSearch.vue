@@ -118,21 +118,29 @@
           <span class="qe-fname" :class="{ root: isRoot(row.path) }" :title="row.path + '/'">{{
             folderLabel(row.path)
           }}</span>
+          <!-- fixed-width, right-aligned counts so the columns line up whatever the numbers are -->
           <span class="qe-fcount">
-            <template v-if="row.images"><i class="mdi mdi-image-outline" />{{ row.images }}</template>
-            <template v-if="row.texts"><i class="mdi mdi-text-box-outline" />{{ row.texts }}</template>
+            <span v-if="row.texts" class="qe-cnt" :title="`${row.texts} text files`"
+              ><i class="mdi mdi-text-box-outline" />{{ row.texts }}</span
+            >
+            <span v-if="row.images" class="qe-cnt" :title="`${row.images} images`"
+              ><i class="mdi mdi-image-outline" />{{ row.images }}</span
+            >
           </span>
           <!-- the pill is the shortcut for the obvious action (index / update); the rest is in ⋯ -->
+          <span class="qe-state">
           <button
             v-if="pillText(row)"
             class="qe-pill"
-            :class="[pillClass(row), { act: pillActs(row) }]"
+            :class="[pillClass(row), { act: pillActs(row), icon: !!pillIcon(row) }]"
             :title="pillTitle(row) + (pillActs(row) ? '\nClick to ' + ({ stale: 'update', detail: 'rebuild', none: 'index', ready: '' })[rowState(row)] : '')"
             :disabled="!pillActs(row)"
             @click="indexFolders([row.path])"
           >
-            {{ pillText(row) }}
+            <i v-if="pillIcon(row)" class="mdi" :class="pillIcon(row)" />
+            <template v-else>{{ pillText(row) }}</template>
           </button>
+          </span>
           <ZenIconButton
             v-if="row.images + row.texts"
             sm
@@ -580,6 +588,16 @@ function pillText(r: FolderRow) {
   if (st === "ready") return "indexed";
   if (st === "stale") return `+${(s.new ?? 0) + (s.changed ?? 0)}${s.removed ? ` −${s.removed}` : ""}`;
   return r.images + r.texts ? "no index" : "";
+}
+/** The steady states read as an icon (✓ indexed, no index, queued); states with something to
+ *  say (+N changed, 45%, another detail) keep their text. */
+function pillIcon(r: FolderRow): string | null {
+  if (job.value.running && job.value.folder === r.path) return null;
+  if (job.value.queued.includes(r.path)) return "mdi-clock-outline";
+  const st = rowState(r);
+  if (st === "ready") return "mdi-check-circle";
+  if (st === "none" && r.images + r.texts) return "mdi-database-off-outline";
+  return null;
 }
 function pillTitle(r: FolderRow) {
   const s = r.status;
@@ -1048,12 +1066,24 @@ onBeforeUnmount(() => {
 }
 .qe-fcount {
   display: inline-flex;
-  gap: 6px;
+  flex: none;
+  gap: 4px;
   color: var(--zen-muted);
   font-variant-numeric: tabular-nums;
 }
-.qe-fcount .mdi {
-  margin-right: 1px;
+.qe-cnt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  min-width: 46px; /* "▣ 12345" */
+}
+/* the state column has one width, so the counts line up whether a row shows ✓ or "+240" */
+.qe-state {
+  flex: none;
+  display: inline-flex;
+  justify-content: center;
+  min-width: 58px;
 }
 .qe-more,
 .qe-more-gap {
@@ -1079,6 +1109,34 @@ onBeforeUnmount(() => {
   color: var(--zen-muted);
   background: var(--zen-surface-2);
   white-space: nowrap;
+}
+.qe-pill.icon {
+  padding: 0;
+  width: 22px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  background: none;
+  font-size: 15px;
+  line-height: 1;
+}
+.qe-pill.icon.ok,
+.qe-pill.icon.info {
+  background: none; /* bare icons: the colour alone says the state */
+}
+.qe-pill.icon.ok {
+  color: var(--zen-ok);
+}
+.qe-pill.icon.info {
+  color: var(--zen-info);
+}
+.qe-pill.icon:not(.ok):not(.info) {
+  color: color-mix(in srgb, var(--zen-muted) 75%, transparent);
+}
+.qe-pill.icon.act:hover {
+  box-shadow: none;
+  filter: none;
+  color: var(--zen-accent);
 }
 .qe-pill:disabled {
   cursor: default;
