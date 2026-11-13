@@ -1060,13 +1060,27 @@ onBeforeUnmount(() => {
 .qe-hit:hover {
   border-color: color-mix(in srgb, var(--zen-accent) 55%, var(--zen-border));
 }
-.qe-hit.picked {
-  border-color: var(--zen-accent);
-  box-shadow: 0 0 0 2px var(--zen-accent);
+/* Selection rings are drawn INSIDE the card, over the image: an outer ring (box-shadow) spills
+   into the grid gap and is clipped by the scroller on the edge rows. */
+.qe-hit::after {
+  content: "";
+  position: absolute;
+  inset: -1px; /* over the card's own 1px border, so the ring is one solid edge */
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 1;
 }
-.qe-hit.auto {
-  border-style: dashed;
-  border-color: var(--zen-accent);
+.qe-hit.picked::after {
+  box-shadow: inset 0 0 0 2px var(--zen-accent);
+}
+.qe-hit.auto::after {
+  border: 2px dashed var(--zen-accent);
+}
+.qe-score,
+.qe-check,
+.qe-name,
+.qe-acts {
+  z-index: 2;
 }
 .qe-text {
   display: flex;
@@ -1094,8 +1108,8 @@ onBeforeUnmount(() => {
 }
 .qe-score {
   position: absolute;
-  top: 3px;
-  left: 3px;
+  top: 4px;
+  left: 4px;
   padding: 0 4px;
   border-radius: 4px;
   font-size: 9.5px;
@@ -1106,8 +1120,8 @@ onBeforeUnmount(() => {
 }
 .qe-check {
   position: absolute;
-  top: 3px;
-  right: 3px;
+  top: 4px;
+  right: 4px;
   width: 16px;
   height: 16px;
   border-radius: 50%;
