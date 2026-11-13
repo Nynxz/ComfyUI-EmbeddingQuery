@@ -1,9 +1,8 @@
 """Loading EmbeddingGemma 2 and encoding with it.
 
-The model lives in ComfyUI's `text_encoders` folder, normally as the single file from
+The model lives in ComfyUI's `text_encoders` folder as the single file from
 huggingface.co/nynxz/embeddinggemma-2 (text + vision, bf16, tokenizer embedded; made by
-`scripts/convert.py`). Google's raw `model.safetensors` with its `tokenizer.json` beside it also
-loads. It is wrapped in a `ModelPatcher`, so
+`scripts/convert.py` from Google's download). It is wrapped in a `ModelPatcher`, so
 ComfyUI's model management loads and offloads it like any other model.
 
 Everything that touches the model goes through `encode_*` under `MODEL_LOCK`. Routes (live search,
@@ -46,8 +45,17 @@ MAX_TEXT_TOKENS = 2048
 
 
 def model_names() -> list[str]:
+    """The EmbeddingGemma 2 files in text_encoders/: single files only, the one format the README
+    tells users to download. A raw Hugging Face folder (`<dir>/model.safetensors`) isn't listed,
+    and a node saved with one falls back to the first listed model."""
     names = folder_paths.get_filename_list(MODEL_FOLDER)
-    return sorted(n for n in names if "embeddinggemma" in n.lower() and n.endswith(".safetensors"))
+    return sorted(
+        n
+        for n in names
+        if "embeddinggemma" in n.lower()
+        and n.endswith(".safetensors")
+        and os.path.basename(n.replace("\\", "/")) != "model.safetensors"
+    )
 
 
 def model_tag(name: str) -> str:
