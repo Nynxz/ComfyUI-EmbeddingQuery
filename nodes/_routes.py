@@ -23,6 +23,7 @@ import io
 import os
 import threading
 import time
+import urllib.parse
 from collections import OrderedDict
 
 from aiohttp import web
@@ -149,6 +150,25 @@ def _thumb(path: str, size: int) -> bytes:
     if len(_THUMBS) > _THUMBS_MAX:
         _THUMBS.popitem(last=False)
     return data
+
+
+_IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+}
+
+
+def _media_type(name: str) -> str:
+    """Every indexed text kind (.txt/.md/.json/.yaml/.csv/.caption) as plain UTF-8 text, so the
+    browser shows it instead of offering a download."""
+    ext = os.path.splitext(name)[1].lower()
+    return _IMAGE_TYPES.get(ext, "text/plain; charset=utf-8")
 
 
 def _bad(msg: str, status: int = 400):
@@ -288,7 +308,18 @@ if routes is not None:
             path = _ref_path(request)
         except (ValueError, FileNotFoundError) as e:
             return _bad(str(e), 404)
-        return web.FileResponse(path)
+        # Shown in a tab, never downloaded: an explicit type (Python's table lacks .webp on some
+        # systems, which made it application/octet-stream) and an inline disposition with the
+        # real name (else a save would be called "file", after the route).
+        name = os.path.basename(path)
+        quoted = urllib.parse.quote(name)
+        return web.FileResponse(
+            path,
+            headers={
+                "Content-Type": _media_type(name),
+                "Content-Disposition": f"inline; filename*=UTF-8''{quoted}",
+            },
+        )
 
     @routes.get(route("text"))
     async def text(request):

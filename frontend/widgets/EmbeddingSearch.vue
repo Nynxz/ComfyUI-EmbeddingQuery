@@ -209,7 +209,7 @@
               :class="{ on: state.similar.includes(h.ref) }"
               @click.stop="toggleSimilar(h.ref, $event.shiftKey)"
             ><i class="mdi mdi-image-search-outline" /></span>
-            <a class="qe-act" :href="fileUrl(h.ref)" target="_blank" title="Open file" @click.stop
+            <a class="qe-act" :href="fileUrl(h.ref)" target="_blank" rel="noopener" title="Open in a new tab" @click.stop
               ><i class="mdi mdi-open-in-new"
             /></a>
           </span>
