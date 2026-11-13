@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-embeddingquery"
-version = "1.0.0"
+version = "1.1.0"
 description = "Semantic search over ComfyUI input folders with EmbeddingGemma 2: text and images in one space, on one node."
 authors = [{ name = "Nynxz", email = "contact@nynxz.com" }]
 readme = "README.md"
