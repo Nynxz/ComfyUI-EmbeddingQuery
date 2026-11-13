@@ -30,13 +30,11 @@
       <ZenInput
         v-else
         class="qe-input"
-        sm
         :model-value="state.query"
         placeholder="Search images and text…"
         @update:model-value="set({ query: String($event) })"
       />
       <ZenToggleGroup
-        sm
         collapse
         :model-value="state.kind"
         :options="KIND_OPTS"
@@ -769,10 +767,13 @@ onBeforeUnmount(() => {
   font-size: 11px;
   color: var(--zen-text);
 }
+/* ZenKit's default-size controls for both: the input and the toggle group must be the same
+   height, or the same radius on the shorter box reads as rounder. The similar-to chip and the
+   linked notice stretch to that same height. */
 .qe-query {
   display: flex;
   gap: 4px;
-  align-items: center;
+  align-items: stretch;
 }
 .qe-input {
   flex: 1;
@@ -785,7 +786,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 24px;
+  height: 100%;
   padding: 0 2px 0 4px;
   border-radius: var(--zen-radius);
   background: color-mix(in srgb, var(--zen-accent) 14%, transparent);
@@ -871,6 +872,7 @@ onBeforeUnmount(() => {
 .qe-folders {
   border: 1px solid var(--zen-border);
   border-radius: var(--zen-radius);
+  overflow: hidden; /* row hovers follow the rounded corners */
   background: var(--zen-surface);
   flex: none;
 }
@@ -893,7 +895,7 @@ onBeforeUnmount(() => {
   color: var(--zen-text);
   font: inherit;
   cursor: pointer;
-  border-radius: var(--zen-radius);
+  border-radius: max(calc(var(--zen-radius) - 3px), 2px); /* nested in the box: outer radius minus the 3px inset */
 }
 .qe-fhead-main:hover {
   background: color-mix(in srgb, var(--zen-text) 6%, transparent);
@@ -934,6 +936,7 @@ onBeforeUnmount(() => {
 .qe-frows {
   max-height: 190px;
   overflow-y: auto;
+  overflow-x: hidden; /* names truncate; a sideways scrollbar's track would leave a gap below */
   border-top: 1px solid var(--zen-border);
   padding: 2px 0;
 }
