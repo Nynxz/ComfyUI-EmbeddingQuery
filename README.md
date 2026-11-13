@@ -9,16 +9,24 @@ query (image plus text).
 
 It's one node, **Embedding Search**, with the whole UI on the node body (ZenKit nodekit):
 
-- **Folders**: every folder under `input/` and `output/` that holds images or text files, with index status
-  (`indexed`, `+N` stale, `no index`). The dot includes a folder in the search; turning on a folder
-  without an index starts indexing it. Each row can (re)index or delete its index. Progress shows
-  live on the node.
-- **Query**: type to search live (no queueing), filtered to all / images / text. "Find similar" on
-  a result searches by that file's stored embedding, without running the model; shift-click it on
-  more results to search by a set of files.
-- **Settings** (cog): the model, how several queries combine, and the ranking size.
+- **Folders**: every folder under `input/` and `output/` that holds images or text files. A folder
+  row stands for its whole subtree: turning on or indexing `input` covers everything under it
+  (each folder keeps its own index, so nothing is embedded twice), and its status sums the subtree
+  (✓ all indexed, `3/7` partly). Turning on a folder without an index starts indexing it; `⋯` has
+  rebuild and delete.
+- **Query**: type to search live (no queueing), filtered to all / images / text, or **drop an
+  image** onto the node to search by it (shift-drop adds to the set). "Find similar" on a result
+  searches by that file's stored embedding without running the model; shift-click it on more
+  results to search by a set of files.
 - **Results**: a grid with scores. Click a result to pin it as the node's output; with nothing
-  pinned, the node outputs the top hit.
+  pinned, the node outputs the top hit. **Drag an image result** onto a Load Image node (or the
+  canvas) to use it there.
+- **Settings** (cog): the model, thumbnails (fill / whole image), how several queries combine,
+  image detail, and the ranking size.
+- **Pop-out** (with [ZenKit](https://github.com/Nynxz/ZenKit) installed): the button in the node's
+  title bar opens the same search in a window, so you can search and drag results while working
+  anywhere. The node body steps aside while it's open, and a workflow saved with it open reopens
+  it. Without ZenKit the button just isn't there.
 
 It's an output node, so it also works mid-graph. Wire an `image` (or a batch) and/or `text` into it
 and queue: it searches with that query, shows the hits on the node, and outputs:

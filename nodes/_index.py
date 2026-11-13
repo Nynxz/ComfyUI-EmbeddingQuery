@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 import folder_paths
 import numpy as np
 
+from . import _egemma2 as eg
 from . import _runtime as rt
 
 VERSION = 1
@@ -39,10 +40,13 @@ ROOTS = {
     "input": folder_paths.get_input_directory,
     "output": folder_paths.get_output_directory,
 }
+# Where a FILE may come from: the searchable roots plus temp/, where images dropped onto the node
+# are uploaded to be searched by (temp/ is never listed or indexed itself).
+FILE_ROOTS = {**ROOTS, "temp": folder_paths.get_temp_directory}
 
 
 def root_dir(root: str) -> str:
-    return os.path.realpath(ROOTS[root]())
+    return os.path.realpath(FILE_ROOTS[root]())
 
 
 def normalize_folder(folder: str) -> str:
@@ -54,10 +58,10 @@ def normalize_folder(folder: str) -> str:
     return f"input/{folder}" if folder else "input"
 
 
-def folder_abs(folder: str) -> str:
+def folder_abs(folder: str, roots=ROOTS) -> str:
     """Folder key -> absolute path, refusing anything outside its root."""
     root_name, _, rel = folder.partition("/")
-    if root_name not in ROOTS:
+    if root_name not in roots:
         raise ValueError(f"not an input/ or output/ folder: {folder!r}")
     root = root_dir(root_name)
     lexical = os.path.normpath(os.path.join(root, rel)) if rel else root
@@ -121,7 +125,11 @@ def scan_tree() -> list[dict]:
                         continue
         except OSError:
             return False
-        row = {"path": rel, "images": images, "texts": texts}
+        # outside its root once symlinks resolve: core loaders refuse such files, so a drag from
+        # here uploads a copy instead of pointing the loader at it
+        root_real = root_dir(rel.split("/", 1)[0])
+        linked = not (real == root_real or real.startswith(root_real + os.sep))
+        row = {"path": rel, "images": images, "texts": texts, "linked": linked}
         at = len(rows)
         rows.append(row)
         any_child = False
@@ -428,16 +436,38 @@ def ref_of(folder: str, name: str) -> str:
 
 def split_ref(ref: str) -> tuple[str, str]:
     folder, _, name = ref.rpartition("/")
-    if folder.split("/", 1)[0] not in ROOTS:
-        raise ValueError(f"not an input/ or output/ file: {ref!r}")
+    if folder.split("/", 1)[0] not in FILE_ROOTS:
+        raise ValueError(f"not an input/, output/ or temp/ file: {ref!r}")
     return folder, name
 
 
-def stored_embeddings(model: str, refs: list[str]) -> np.ndarray:
-    """[m, 768] for the indexed refs among `refs`; raises LookupError when none is indexed."""
-    rows = [v for r in refs if (v := stored_embedding(model, r)) is not None]
+def similar_embeddings(
+    loaded: rt.Loaded, refs: list[str], detail: int = rt.DEFAULT_DETAIL
+) -> np.ndarray:
+    """[m, 768] query vectors for a similar-to set: an indexed file's stored embedding (no model
+    run), else the file embedded now (an image dropped onto the node, or a file in a folder that
+    isn't indexed). Files that are gone are skipped; LookupError when none is left."""
+    rows, todo = [], []
+    for r in refs:
+        v = stored_embedding(loaded.name, r) if not r.startswith("temp/") else None
+        if v is not None:
+            rows.append(v)
+            continue
+        try:
+            todo.append(ref_path(r))
+        except (ValueError, FileNotFoundError):
+            continue
+    queries = []
+    for path in todo:
+        if kind_of(path) == "image":
+            queries.append(rt.Query(images=[rt.read_image(path)], detail=detail))
+        elif kind_of(path) == "text":
+            # a text file stands in as a document, the way it would be indexed
+            queries.append(rt.Query(text=rt.read_text(path), prefix=eg.DOCUMENT_PREFIX))
+    if queries:
+        rows.extend(rt.encode_queries(loaded, queries))
     if not rows:
-        raise LookupError("none of the similar-to files is indexed")
+        raise LookupError("none of the similar-to files can be read")
     return np.stack(rows)
 
 
@@ -456,7 +486,7 @@ def ref_path(ref: str) -> str:
     folder, name = split_ref(ref)
     if "/" in name or name in ("", ".", ".."):
         raise ValueError(f"bad file name in {ref!r}")
-    path = os.path.join(folder_abs(folder), name)
+    path = os.path.join(folder_abs(folder, FILE_ROOTS), name)
     if not os.path.isfile(path):
         raise FileNotFoundError(f"{ref} no longer exists")
     return path

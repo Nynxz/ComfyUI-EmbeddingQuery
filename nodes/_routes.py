@@ -261,11 +261,13 @@ if routes is not None:
         similar = body.get("similar") or []
         similar = [similar] if isinstance(similar, str) else [str(r) for r in similar]
         combine = body.get("combine", "mean")
+        detail = int(body.get("detail", rt.DEFAULT_DETAIL))
+        detail = detail if detail in rt.DETAILS else rt.DEFAULT_DETAIL
 
         def work():
             t = time.perf_counter()
             if similar:
-                q = ix.stored_embeddings(model, similar)
+                q = ix.similar_embeddings(rt.load(model), similar, detail)
             else:
                 if not text.strip():
                     return {"hits": [], "ms": 0}

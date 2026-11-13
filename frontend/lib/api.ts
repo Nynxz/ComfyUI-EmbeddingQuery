@@ -36,6 +36,8 @@ export interface FolderRow {
   path: string;
   images: number;
   texts: number;
+  /** Symlinked from outside its root: core loaders refuse files here, so a drag uploads a copy. */
+  linked?: boolean;
   status: FolderStatus;
 }
 
@@ -111,6 +113,7 @@ export const search = async (
       text: s.similar.length ? "" : s.query,
       similar: s.similar,
       combine: s.combine,
+      detail: s.detail,
       top_k: s.top_k,
       kind: s.kind,
       dim: s.dim,

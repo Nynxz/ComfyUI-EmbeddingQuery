@@ -171,7 +171,7 @@ class EmbeddingSearch(io.ComfyNode):
             else:
                 q, source = None, "none"  # an empty wired text
         elif s["similar"]:
-            q = ix.stored_embeddings(s["model"], s["similar"])
+            q = ix.similar_embeddings(rt.load(s["model"]), s["similar"], s["detail"])
             source, query_text = "similar", ""
         elif s["query"].strip():
             query_text = s["query"]

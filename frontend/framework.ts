@@ -4,5 +4,13 @@ import { createNodekit } from "@nynxz/zenkit-nodekit";
 import manifest from "../pack.json";
 
 export * from "@nynxz/zenkit-nodekit";
-export const { NAMESPACE, DISPLAY_NAME, nodeId, routeUrl, registerNodes, discoverWidgets, widgetTypes } =
-  createNodekit(manifest);
+export const {
+  NAMESPACE,
+  DISPLAY_NAME,
+  nodeId,
+  routeUrl,
+  registerNodes,
+  discoverWidgets,
+  widgetTypes,
+  addNodeHeaderButton,
+} = createNodekit(manifest);

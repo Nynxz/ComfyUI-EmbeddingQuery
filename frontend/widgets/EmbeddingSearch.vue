@@ -5,7 +5,23 @@
     :gap="6"
     pad="2px"
     class="qe"
+    :class="{ 'qe-panel': panel, dropping }"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
   >
+    <!-- popped out: the node body steps aside for the ZenKit panel -->
+    <div v-if="poppedHere" class="qe-popped">
+      <i class="mdi mdi-open-in-app" />
+      <span>Open in a window</span>
+      <ZenButton sm icon="mdi mdi-eye-outline" @click="popOut(true)">Show it</ZenButton>
+    </div>
+    <template v-else>
+    <div v-if="dropping" class="qe-dropmask">
+      <i class="mdi mdi-image-search-outline" /><span>Drop to search by this image</span>
+      <small>shift: add to the similar-to set</small>
+    </div>
+
     <!-- query -->
     <div class="qe-query">
       <div v-if="linkedQuery" class="qe-linked">
@@ -30,7 +46,7 @@
         v-else
         class="qe-input"
         :model-value="state.query"
-        placeholder="Search images and text…"
+        placeholder="Search images and text… or drop an image"
         @update:model-value="set({ query: String($event) })"
       />
       <ZenToggleGroup
@@ -93,7 +109,7 @@
           v-for="row in visibleFolders"
           :key="row.path"
           class="qe-frow"
-          :class="{ off: !isOn(row.path), busy: job.running && job.folder === row.path }"
+          :class="{ off: !isOn(row.path) && !partlyOn(row.path), busy: job.running && job.folder === row.path }"
           :style="{ paddingLeft: `${4 + folderDepth(row.path) * 12}px` }"
         >
           <button
@@ -106,8 +122,9 @@
           </button>
           <span v-else class="qe-chev" />
           <ZenDot
+            :class="{ 'qe-partly': partlyOn(row.path) }"
             :model-value="isOn(row.path)"
-            :title="isOn(row.path) ? 'Searched: click to leave out' : 'Not searched: click to include (indexes it if needed)'"
+            :title="dotTitle(row)"
             @update:model-value="setOn(row.path, $event)"
           />
           <i
@@ -119,30 +136,30 @@
             folderLabel(row.path)
           }}</span>
           <!-- fixed-width, right-aligned counts so the columns line up whatever the numbers are -->
-          <span class="qe-fcount">
-            <span v-if="row.texts" class="qe-cnt" :title="`${row.texts} text files`"
-              ><i class="mdi mdi-text-box-outline" />{{ row.texts }}</span
+          <span class="qe-fcount" :class="{ summed: counts(row).summed }" :title="countTitle(row)">
+            <span v-if="counts(row).texts" class="qe-cnt"
+              ><i class="mdi mdi-text-box-outline" />{{ counts(row).texts }}</span
             >
-            <span v-if="row.images" class="qe-cnt" :title="`${row.images} images`"
-              ><i class="mdi mdi-image-outline" />{{ row.images }}</span
+            <span v-if="counts(row).images" class="qe-cnt"
+              ><i class="mdi mdi-image-outline" />{{ counts(row).images }}</span
             >
           </span>
           <!-- the pill is the shortcut for the obvious action (index / update); the rest is in ⋯ -->
           <span class="qe-state">
-          <button
-            v-if="pillText(row)"
-            class="qe-pill"
-            :class="[pillClass(row), { act: pillActs(row), icon: !!pillIcon(row) }]"
-            :title="pillTitle(row) + (pillActs(row) ? '\nClick to ' + ({ stale: 'update', detail: 'rebuild', none: 'index', ready: '' })[rowState(row)] : '')"
-            :disabled="!pillActs(row)"
-            @click="indexFolders([row.path])"
-          >
-            <i v-if="pillIcon(row)" class="mdi" :class="pillIcon(row)" />
-            <template v-else>{{ pillText(row) }}</template>
-          </button>
+            <button
+              v-if="pillText(row)"
+              class="qe-pill"
+              :class="[pillClass(row), { act: pillActs(row), icon: !!pillIcon(row) }]"
+              :title="pillTitle(row) + (pillActs(row) ? '\nClick to ' + pillAction(row) : '')"
+              :disabled="!pillActs(row)"
+              @click="indexRow(row)"
+            >
+              <i v-if="pillIcon(row)" class="mdi" :class="pillIcon(row)" />
+              <template v-else>{{ pillText(row) }}</template>
+            </button>
           </span>
           <ZenIconButton
-            v-if="row.images + row.texts"
+            v-if="counts(row).images + counts(row).texts"
             sm
             class="qe-more"
             icon="mdi mdi-dots-horizontal"
@@ -154,26 +171,36 @@
         </div>
         <ZenPopover v-model:open="menu.open" :anchor="menu.anchor ?? undefined" placement="bottom-end">
           <template v-if="menuRow">
-            <ZenMenuItem
-              v-if="rowState(menuRow) !== 'ready'"
-              icon="mdi mdi-database-plus-outline"
-              :disabled="isQueued(menuRow.path)"
-              @select="menuDo(() => indexFolders([menuRow!.path]))"
-            >
-              {{
-                { stale: `Update (${pillText(menuRow)})`, detail: `Rebuild at detail ${state.detail}`, none: "Index folder", ready: "" }[
-                  rowState(menuRow)
-                ]
-              }}
-            </ZenMenuItem>
-            <ZenMenuItem
-              v-if="menuRow.status.state !== 'none' && rowState(menuRow) !== 'detail'"
-              icon="mdi mdi-database-refresh-outline"
-              :disabled="isQueued(menuRow.path)"
-              @select="menuDo(() => indexFolders([menuRow!.path], true))"
-            >
-              Rebuild from scratch
-            </ZenMenuItem>
+            <template v-if="isTree(menuRow)">
+              <ZenMenuItem
+                v-if="needsWork(menuRow).length"
+                icon="mdi mdi-database-plus-outline"
+                @select="menuDo(() => indexRow(menuRow!))"
+              >
+                Index {{ needsWork(menuRow).length }} folder{{ needsWork(menuRow).length === 1 ? "" : "s" }} here
+              </ZenMenuItem>
+              <ZenMenuItem icon="mdi mdi-database-refresh-outline" @select="menuDo(() => indexRow(menuRow!, true))">
+                Rebuild all from scratch
+              </ZenMenuItem>
+            </template>
+            <template v-else>
+              <ZenMenuItem
+                v-if="rowState(menuRow) !== 'ready'"
+                icon="mdi mdi-database-plus-outline"
+                :disabled="isQueued(menuRow.path)"
+                @select="menuDo(() => indexRow(menuRow!))"
+              >
+                {{ menuIndexLabel(menuRow) }}
+              </ZenMenuItem>
+              <ZenMenuItem
+                v-if="menuRow.status.state !== 'none' && rowState(menuRow) !== 'detail'"
+                icon="mdi mdi-database-refresh-outline"
+                :disabled="isQueued(menuRow.path)"
+                @select="menuDo(() => indexRow(menuRow!, true))"
+              >
+                Rebuild from scratch
+              </ZenMenuItem>
+            </template>
             <template v-if="menuRow.status.state !== 'none'">
               <ZenMenuSeparator />
               <ZenMenuItem
@@ -182,7 +209,7 @@
                 :disabled="isQueued(menuRow.path)"
                 @select="menuDo(() => removeIndex(menuRow!.path))"
               >
-                Delete index
+                {{ isTree(menuRow) ? "Delete this folder's own index" : "Delete index" }}
               </ZenMenuItem>
             </template>
           </template>
@@ -193,40 +220,47 @@
     <!-- results -->
     <div ref="resultsEl" class="qe-results">
       <div ref="scrollEl" class="qe-scroll" v-bind="wheelScroll">
-      <div v-if="hits.length" class="qe-grid" :style="{ gridTemplateColumns: `repeat(${cols}, 1fr)` }">
-        <button
-          v-for="h in hits"
-          :key="h.ref"
-          class="qe-hit"
-          :class="{ picked: h.ref === state.selected, auto: !state.selected && h.ref === autoPick }"
-          :title="`${h.ref}\nscore ${h.score.toFixed(3)}${!state.selected && h.ref === autoPick ? '\nOutput of the last run (top result, nothing pinned)' : ''}`"
-          @mousedown.prevent
-          @click="pick(h.ref)"
+        <div
+          v-if="hits.length"
+          class="qe-grid"
+          :class="'fit-' + fit"
+          :style="{ gridTemplateColumns: `repeat(${cols}, 1fr)` }"
         >
-          <img v-if="h.kind === 'image'" :src="thumbUrl(h.ref, thumbSize)" loading="lazy" draggable="false" />
-          <div v-else class="qe-text">
-            <i class="mdi mdi-text-box-outline" />
-            <span class="qe-snip">{{ snippets[h.ref] ?? "" }}</span>
-          </div>
-          <span class="qe-score">{{ h.score.toFixed(2) }}</span>
-          <span v-if="h.ref === state.selected" class="qe-check"><i class="mdi mdi-check" /></span>
-          <span class="qe-name">{{ h.name }}</span>
-          <span class="qe-acts">
-            <span
-              v-if="!linkedQuery"
-              class="qe-act"
-              role="button"
-              :title="state.similar.includes(h.ref) ? 'Remove from the similar-to set' : 'Find similar (shift-click: add to the set)'"
-              :class="{ on: state.similar.includes(h.ref) }"
-              @click.stop="toggleSimilar(h.ref, $event.shiftKey)"
-            ><i class="mdi mdi-image-search-outline" /></span>
-            <a class="qe-act" :href="fileUrl(h.ref)" target="_blank" rel="noopener" title="Open in a new tab" @click.stop
-              ><i class="mdi mdi-open-in-new"
-            /></a>
-          </span>
-        </button>
-      </div>
-      <ZenEmpty v-else :icon="emptyIcon" :title="emptyTitle" />
+          <button
+            v-for="h in hits"
+            :key="h.ref"
+            class="qe-hit"
+            :class="{ picked: h.ref === state.selected, auto: !state.selected && h.ref === autoPick }"
+            :title="hitTitle(h)"
+            :draggable="h.kind === 'image'"
+            @dragstart="onDragStart($event, h)"
+            @click="pick(h.ref)"
+          >
+            <img v-if="h.kind === 'image'" :src="thumbUrl(h.ref, thumbSize)" loading="lazy" draggable="false" />
+            <div v-else class="qe-text">
+              <i class="mdi mdi-text-box-outline" />
+              <span class="qe-snip">{{ snippets[h.ref] ?? "" }}</span>
+            </div>
+            <span class="qe-score">{{ h.score.toFixed(2) }}</span>
+            <span v-if="h.ref === state.selected" class="qe-check"><i class="mdi mdi-check" /></span>
+            <span class="qe-name">{{ h.name }}</span>
+            <span class="qe-acts">
+              <span
+                v-if="!linkedQuery"
+                class="qe-act"
+                role="button"
+                :title="state.similar.includes(h.ref) ? 'Remove from the similar-to set' : 'Find similar (shift-click: add to the set)'"
+                :class="{ on: state.similar.includes(h.ref) }"
+                @click.stop="toggleSimilar(h.ref, $event.shiftKey)"
+                ><i class="mdi mdi-image-search-outline"
+              /></span>
+              <a class="qe-act" :href="fileUrl(h.ref)" target="_blank" rel="noopener" title="Open in a new tab" @click.stop
+                ><i class="mdi mdi-open-in-new"
+              /></a>
+            </span>
+          </button>
+        </div>
+        <ZenEmpty v-else :icon="emptyIcon" :title="emptyTitle" />
       </div>
     </div>
 
@@ -243,8 +277,8 @@
         <ZenIconButton sm icon="mdi mdi-pin-off-outline" title="Unpick: output the top result" @click="set({ selected: null })" />
       </template>
       <span v-else-if="hits.length" class="qe-muted" title="Click a result to pin it as the output">output: top result</span>
-      <ZenIconButton sm icon="mdi mdi-magnify-minus-outline" title="Smaller thumbnails" :disabled="zoom <= ZOOM_MIN" @click="setZoom(zoom - ZOOM_STEP)" />
-      <ZenIconButton sm icon="mdi mdi-magnify-plus-outline" title="Larger thumbnails" :disabled="zoom >= ZOOM_MAX" @click="setZoom(zoom + ZOOM_STEP)" />
+      <ZenIconButton sm icon="mdi mdi-magnify-minus-outline" title="Smaller thumbnails" :disabled="zoom <= ZOOM.min" @click="setZoom(zoom - ZOOM.step)" />
+      <ZenIconButton sm icon="mdi mdi-magnify-plus-outline" title="Larger thumbnails" :disabled="zoom >= ZOOM.max" @click="setZoom(zoom + ZOOM.step)" />
       <ZenNumber
         class="qe-topk"
         sm
@@ -263,7 +297,7 @@
             sm
             icon="mdi mdi-cog-outline"
             :active="settingsOpen"
-            title="Model and ranking settings"
+            title="Settings: model, thumbnails, ranking"
             @click="settingsOpen = !settingsOpen"
           />
         </template>
@@ -276,6 +310,15 @@
               :options="models.map((m) => ({ value: m, label: m }))"
               placeholder="No model found"
               @update:model-value="setModel(String($event))"
+            />
+          </label>
+          <label class="qe-set-row">
+            <span>Thumbnails</span>
+            <ZenSelect
+              sm
+              :model-value="fit"
+              :options="FIT_OPTS"
+              @update:model-value="setFit($event as Fit)"
             />
           </label>
           <label class="qe-set-row">
@@ -323,6 +366,7 @@
         </div>
       </ZenPopover>
     </div>
+    </template>
   </ZenWidget>
 </template>
 
@@ -336,7 +380,7 @@ export const widgetOptions: WidgetOptions = {
 };
 
 // After a run, the node's `ui` output comes back through the widget callback, wrapped so the
-// component can tell it from its own value writes.
+// store can tell it from its own value writes.
 export const nodeDef: Omit<NodeDef, "widgets"> = {
   is: "embeddingquery.Search",
   minSize: [420, 520],
@@ -348,9 +392,13 @@ export const nodeDef: Omit<NodeDef, "widgets"> = {
 </script>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+// A view of one node's search. The state and its side effects (live search, run results, job
+// progress) live in lib/searchStore.ts, shared with the pop-out panel when ZenKit is installed:
+// the panel mounts this same component with `panel: true`.
+import { computed, getCurrentInstance, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { api } from "@comfy/api";
 import {
+  ZenButton,
   ZenDot,
   ZenEmpty,
   ZenIconButton,
@@ -364,46 +412,84 @@ import {
   ZenWidget,
 } from "@nynxz/zenkit-ui";
 
-import { rearmIfHovered, wheelScroll } from "@/lib/wheelScroll";
 import {
-  cancelIndex as apiCancel,
-  deleteIndex,
+  addNodeHeaderButton,
+  hasMediaDrop,
+  hasZenPanels,
+  openZenPanel,
+  readMediaDrop,
+  setMediaDragData,
+  type NodeHeaderButtonHandle,
+  type ZenPanelHandle,
+} from "@/framework";
+import { rearmIfHovered, wheelScroll } from "@/lib/wheelScroll";
+import { dragStartedInSearch } from "@/lib/dragOrigin";
+import { useSearchStore, ZOOM, type DOMWidget, type Fit, type NodeLike } from "@/lib/searchStore";
+import {
   fileUrl,
   folderDepth,
   folderLabel,
   isRoot,
-  normalizeFolder,
-  parentFolder,
-  JOB_EVENT,
-  listFolders,
-  listModels,
-  search,
-  startIndex,
   textOf,
   thumbUrl,
+  type Combine,
   type FolderRow,
   type Hit,
-  type JobState,
-  type Combine,
   type Kind,
-  type RunResult,
-  type SearchState,
 } from "@/lib/api";
 
-interface DOMWidget {
-  value: unknown;
-  callback?: (v: unknown) => void;
-}
-interface NodeLike {
-  inputs?: { name: string; link?: number | null }[];
-  properties?: Record<string, unknown>;
-  size?: [number, number];
-  onConnectionsChange?: (...args: unknown[]) => void;
-  isInputConnected?: (slot: number) => boolean;
-  graph?: { setDirtyCanvas?: (a: boolean, b: boolean) => void };
-}
+const props = defineProps<{ widget?: DOMWidget; node?: NodeLike; panel?: boolean }>();
 
-const props = defineProps<{ widget?: DOMWidget; node?: NodeLike }>();
+const store = useSearchStore(props.widget, props.node);
+const {
+  state,
+  set,
+  hits,
+  ms,
+  autoPick,
+  searching,
+  error,
+  models,
+  folderRows,
+  job,
+  foldersOpen,
+  toggleFolders,
+  hasChildren,
+  isCollapsed,
+  toggleCollapsed,
+  visibleFolders,
+  isOn,
+  partlyOn,
+  setOn,
+  isQueued,
+  isTree,
+  counts,
+  needsIndex,
+  folderSummary,
+  jobPct,
+  rowState,
+  needsWork,
+  pillActs,
+  pillClass,
+  pillText,
+  pillIcon,
+  pillTitle,
+  pillAction,
+  refreshFolders,
+  indexRow,
+  indexSearched,
+  cancelIndex,
+  removeIndex,
+  setModel,
+  linkedQuery,
+  pick,
+  toggleSimilar,
+  zoom,
+  setZoom,
+  fit,
+  setFit,
+  panelOpen,
+} = store;
 
 const KIND_OPTS = [
   { value: "all", icon: "mdi mdi-shape-outline", title: "Images and text" },
@@ -421,131 +507,38 @@ const DETAIL_OPTS = [
   { value: "140", label: "Medium (140, ~2x faster)" },
   { value: "70", label: "Fast (70, ~4x faster)" },
 ];
+const FIT_OPTS = [
+  { value: "cover", label: "Fill the card (crop)" },
+  { value: "contain", label: "Whole image" },
+];
 const DIM_OPTS = ["768", "512", "256", "128"].map((d) => ({ value: d, label: d }));
 const IMAGE_EXT = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i;
+const isImageRef = (r: string) => IMAGE_EXT.test(r);
+const baseName = (r: string) => r.split("/").pop() ?? r;
 
 const rootEl = ref<{ el: HTMLElement | null } | null>(null);
-
-// ----- state (the widget value) -------------------------------------------------------------
-
-const DEFAULTS: SearchState = {
-  model: "",
-  folders: [],
-  query: "",
-  kind: "all",
-  top_k: 24,
-  dim: 768,
-  selected: null,
-  similar: [],
-  combine: "mean",
-  detail: 280,
-};
-function toState(v: unknown): SearchState {
-  const o = v && typeof v === "object" ? (v as Partial<SearchState>) : {};
-  return {
-    ...DEFAULTS,
-    ...o,
-    similar: typeof o.similar === "string" ? [o.similar] : Array.isArray(o.similar) ? o.similar.filter((r) => typeof r === "string") : [],
-    combine: ["mean", "any", "joint"].includes(o.combine as string) ? (o.combine as Combine) : "mean",
-    detail: [280, 140, 70].includes(Number(o.detail)) ? Number(o.detail) : 280,
-    folders: Array.isArray(o.folders)
-      ? [...new Set(o.folders.filter((f) => typeof f === "string").map(normalizeFolder))]
-      : [],
-  };
-}
-const state = reactive<SearchState>(toState(props.widget?.value));
-
-function set(patch: Partial<SearchState>) {
-  Object.assign(state, patch);
-  const value = JSON.parse(JSON.stringify(state)) as SearchState;
-  const w = props.widget;
-  if (!w) return;
-  // eslint-disable-next-line vue/no-mutating-props -- the host widget object; its value IS the node state
-  w.value = value;
-  try {
-    ownWrite = true;
-    w.callback?.(value);
-  } finally {
-    ownWrite = false;
-  }
-  props.node?.graph?.setDirtyCanvas?.(true, false);
-}
-let ownWrite = false;
-
-// ----- run results (from the node's ui output) ----------------------------------------------
-
-const hits = ref<Hit[]>([]);
-const ms = ref<number | null>(null);
-const autoPick = ref<string | null>(null);
-const searching = ref(false);
-const error = ref("");
-
-function onRun(r: RunResult | null) {
-  if (!r) return;
-  hits.value = r.hits ?? [];
-  ms.value = null;
-  error.value = "";
-  autoPick.value = r.auto ? r.picked : null;
-}
-
-// ----- folders and indexing -----------------------------------------------------------------
-
-const models = ref<string[]>([]);
 const settingsOpen = ref(false);
-const folderRows = ref<FolderRow[]>([]);
-const job = ref<JobState>({ running: false, folder: null, done: 0, total: 0, queued: [], error: null, finished: null });
-// Open while there's nothing to search yet; afterwards the results get the room unless the user
-// opened the list on this node (remembered in its properties).
-const savedOpen = props.node?.properties?.qeFoldersOpen;
-const foldersOpen = ref(typeof savedOpen === "boolean" ? savedOpen : !state.folders.length);
-const collapsed = ref<Set<string>>(new Set((props.node?.properties?.qeCollapsed as string[]) ?? []));
 
-function toggleFolders() {
-  foldersOpen.value = !foldersOpen.value;
-  if (props.node?.properties) props.node.properties.qeFoldersOpen = foldersOpen.value;
-}
-const hasChildren = (p: string) => folderRows.value.some((r) => r.path !== p && parentOf(r.path) === p);
-const parentOf = parentFolder;
-const isCollapsed = (p: string) => collapsed.value.has(p);
-function toggleCollapsed(p: string) {
-  const next = new Set(collapsed.value);
-  if (next.has(p)) next.delete(p);
-  else next.add(p);
-  collapsed.value = next;
-  if (props.node?.properties) props.node.properties.qeCollapsed = [...next];
-}
-const visibleFolders = computed(() =>
-  folderRows.value.filter((r) => {
-    for (let p = parentOf(r.path); p !== null; p = parentOf(p)) if (collapsed.value.has(p)) return false;
-    return true;
-  }),
-);
+// ----- folder rows ---------------------------------------------------------------------------
 
-const isOn = (p: string) => state.folders.includes(p);
-function setOn(p: string, on: boolean) {
-  const folders = on ? [...new Set([...state.folders, p])] : state.folders.filter((f) => f !== p);
-  set({ folders });
-  const row = folderRows.value.find((r) => r.path === p);
-  if (on && row && rowState(row) !== "ready" && row.images + row.texts) void indexFolders([p]);
+function dotTitle(row: FolderRow) {
+  const tree = isTree(row) ? " (with its subfolders)" : "";
+  if (isOn(row.path)) return `Searched${tree}: click to leave out`;
+  if (partlyOn(row.path)) return "Some subfolders are searched: click to include all of them";
+  return `Not searched: click to include${tree} (indexes what needs it)`;
 }
-const isQueued = (p: string) => (job.value.running && job.value.folder === p) || job.value.queued.includes(p);
-
-const needsIndex = computed(
-  () =>
-    folderRows.value.filter(
-      (r) => isOn(r.path) && rowState(r) !== "ready" && r.images + r.texts > 0 && !isQueued(r.path),
-    ).length,
-);
-const folderSummary = computed(() => {
-  const on = state.folders.length;
-  if (!folderRows.value.length) return "Folders";
-  if (!on) return "No folders searched: pick some";
-  const files = folderRows.value
-    .filter((r) => isOn(r.path))
-    .reduce((n, r) => n + (r.status.indexed || 0), 0);
-  return `${on} folder${on === 1 ? "" : "s"} · ${files} indexed files`;
-});
-const jobPct = computed(() => (job.value.total ? (100 * job.value.done) / job.value.total : 0));
+function countTitle(row: FolderRow) {
+  const c = counts(row);
+  const total = `${c.images} images, ${c.texts} text files`;
+  if (!c.summed) return total;
+  return `${total} in this folder and its subfolders (${c.own} here)`;
+}
+function menuIndexLabel(row: FolderRow) {
+  const st = rowState(row);
+  if (st === "stale") return `Update (${pillText(row)})`;
+  if (st === "detail") return `Rebuild at detail ${state.detail}`;
+  return "Index folder";
+}
 
 // one shared ⋯ menu, anchored to the row button that opened it
 const menu = reactive<{ open: boolean; path: string; anchor: HTMLElement | null }>({
@@ -564,260 +557,237 @@ function menuDo(fn: () => unknown) {
   menu.open = false;
   void fn();
 }
-/** The pill indexes / updates on click when there's something to do and nothing queued. */
-const pillActs = (r: FolderRow) => rowState(r) !== "ready" && r.images + r.texts > 0 && !isQueued(r.path);
 
-/** The row's state for THIS node: an index built at another image detail needs rebuilding. */
-type RowState = "none" | "ready" | "stale" | "detail";
-function rowState(r: FolderRow): RowState {
-  const s = r.status.state;
-  if (s !== "none" && (r.status.detail ?? 280) !== state.detail) return "detail";
-  return s;
-}
-function pillClass(r: FolderRow) {
-  if (isQueued(r.path)) return "info";
-  return { ready: "ok", stale: "warn", detail: "warn", none: "" }[rowState(r)];
-}
-function pillText(r: FolderRow) {
-  if (job.value.running && job.value.folder === r.path)
-    return job.value.total ? `${Math.round(jobPct.value)}%` : "…";
-  if (job.value.queued.includes(r.path)) return "queued";
-  const s = r.status;
-  const st = rowState(r);
-  if (st === "detail") return `detail ${s.detail ?? 280}`;
-  if (st === "ready") return "indexed";
-  if (st === "stale") return `+${(s.new ?? 0) + (s.changed ?? 0)}${s.removed ? ` −${s.removed}` : ""}`;
-  return r.images + r.texts ? "no index" : "";
-}
-/** The steady states read as an icon (✓ indexed, no index, queued); states with something to
- *  say (+N changed, 45%, another detail) keep their text. */
-function pillIcon(r: FolderRow): string | null {
-  if (job.value.running && job.value.folder === r.path) return null;
-  if (job.value.queued.includes(r.path)) return "mdi-clock-outline";
-  const st = rowState(r);
-  if (st === "ready") return "mdi-check-circle";
-  if (st === "none" && r.images + r.texts) return "mdi-database-off-outline";
-  return null;
-}
-function pillTitle(r: FolderRow) {
-  const s = r.status;
-  if (s.state === "none") return "Not indexed";
-  const when = s.updated ? new Date(s.updated * 1000).toLocaleString() : "";
-  const parts = [`${s.indexed} files indexed ${when}, image detail ${s.detail ?? 280}`];
-  if (rowState(r) === "detail") parts.push(`This node uses detail ${state.detail}: rebuild to match`);
-  if (s.state === "stale") parts.push(`${s.new ?? 0} new, ${s.changed ?? 0} changed, ${s.removed ?? 0} removed`);
-  if (s.failed) parts.push(`${s.failed} could not be read`);
-  return parts.join("\n");
+// ----- results grid --------------------------------------------------------------------------
+
+function hitTitle(h: Hit) {
+  const auto = !state.selected && h.ref === autoPick.value ? "\nOutput of the last run (top result, nothing pinned)" : "";
+  const drag = h.kind === "image" ? "\nDrag onto a Load Image node (or the canvas) to use it" : "";
+  return `${h.ref}\nscore ${h.score.toFixed(3)}${auto}${drag}`;
 }
 
-async function refreshFolders() {
-  try {
-    models.value = await listModels();
-    if (!models.value.includes(state.model) && models.value.length) set({ model: models.value[0] });
-    if (!state.model) return;
-    const d = await listFolders(state.model);
-    folderRows.value = d.folders;
-    job.value = d.job;
-  } catch (e) {
-    error.value = String((e as Error).message ?? e);
-  }
-}
-async function indexFolders(paths: string[], full = false) {
-  try {
-    job.value = await startIndex(state.model, paths, full, state.detail);
-  } catch (e) {
-    error.value = String((e as Error).message ?? e);
-  }
-}
-function indexSearched() {
-  void indexFolders(
-    folderRows.value
-      .filter((r) => isOn(r.path) && rowState(r) !== "ready" && r.images + r.texts > 0)
-      .map((r) => r.path),
-  );
-}
-async function cancelIndex() {
-  job.value = await apiCancel();
-}
-async function removeIndex(p: string) {
-  await deleteIndex(state.model, p);
-  await refreshFolders();
-}
-function setModel(m: string) {
-  set({ model: m, selected: null, similar: [] });
-  hits.value = [];
-  void refreshFolders();
-}
-
-function onJobEvent(e: Event) {
-  const prev = job.value;
-  job.value = (e as CustomEvent<JobState>).detail;
-  // a folder finished (or everything did): its status changed
-  if ((prev.folder && prev.folder !== job.value.folder) || (prev.running && !job.value.running)) {
-    void refreshFolders().then(() => liveSearch());
-  }
-}
-
-// ----- live search ---------------------------------------------------------------------------
-
-const linked = ref<{ text: boolean; image: boolean }>({ text: false, image: false });
-const linkedQuery = computed(() =>
-  linked.value.image && linked.value.text ? "image + text" : linked.value.image ? "image" : linked.value.text ? "text" : "",
-);
-function readLinks() {
-  const node = props.node;
-  const ins = node?.inputs ?? [];
-  const on = (name: string) => {
-    const slot = ins.findIndex((i) => i.name === name);
-    if (slot < 0) return false;
-    return node?.isInputConnected ? node.isInputConnected(slot) : ins[slot].link != null;
-  };
-  const was = linkedQuery.value;
-  linked.value = { text: on("text"), image: on("image") };
-  if (linkedQuery.value !== was) {
-    // results from the on-node query no longer describe what a run will search
-    hits.value = [];
-    ms.value = null;
-    autoPick.value = null;
-    if (!linkedQuery.value) liveSearch();
-  }
-}
-
-let timer: ReturnType<typeof setTimeout> | null = null;
-let inflight: AbortController | null = null;
-function liveSearch(delay = 0) {
-  if (timer) clearTimeout(timer);
-  timer = setTimeout(runLive, delay);
-}
-async function runLive() {
-  const similar = state.similar.length > 0;
-  if (linkedQuery.value) return; // wired inputs are the query: only a queued run searches
-  if (!state.model || !state.folders.length || (!state.query.trim() && !similar)) {
-    if (!similar && !state.query.trim()) hits.value = [];
-    return;
-  }
-  inflight?.abort();
-  inflight = new AbortController();
-  searching.value = true;
-  try {
-    const r = await search(state, inflight.signal);
-    hits.value = r.hits;
-    ms.value = r.ms;
-    autoPick.value = null;
-    error.value = "";
-  } catch (e) {
-    if ((e as Error).name !== "AbortError") error.value = String((e as Error).message ?? e);
-  } finally {
-    searching.value = false;
-  }
-}
-watch(
-  () => [state.query, state.kind, state.top_k, state.dim, state.folders.join("\n"), state.similar.join("\n"), state.combine, state.model],
-  (now, before) => liveSearch(now[0] !== before?.[0] ? 350 : 0),
-);
-
-// The dashed "auto" outline marks the top hit a run output because nothing was pinned. A pin
-// overrides it, so it only shows while nothing is pinned (the class binding checks that too).
-function pick(ref: string) {
-  set({ selected: state.selected === ref ? null : ref });
-}
-/** Click: search like this file. Shift-click: add it to (or drop it from) the similar-to set. */
-function toggleSimilar(ref: string, add: boolean) {
-  const has = state.similar.includes(ref);
-  if (add) set({ similar: has ? state.similar.filter((r) => r !== ref) : [...state.similar, ref] });
-  else set({ similar: has && state.similar.length === 1 ? [] : [ref] });
-}
-
-// New results under a resting pointer: keep the wheel on the grid (see lib/wheelScroll.ts).
+// New results: back to the top when they answer a NEW query (text, similar-to set, kind, folders,
+// settings) or a new run; a refresh of the same search (an index finishing) keeps the scroll. And
+// under a resting pointer, keep the wheel on the grid (see lib/wheelScroll.ts).
 const scrollEl = ref<HTMLElement | null>(null);
-watch(hits, () => void nextTick(() => rearmIfHovered(scrollEl.value)), { flush: "post" });
+const queryKey = () =>
+  JSON.stringify([state.query, state.similar, state.kind, state.folders, state.combine, state.dim, state.detail, state.model, store.runCount.value]);
+let shownKey = queryKey();
+watch(
+  hits,
+  () =>
+    void nextTick(() => {
+      const key = queryKey();
+      if (key !== shownKey && scrollEl.value) scrollEl.value.scrollTop = 0;
+      shownKey = key;
+      rearmIfHovered(scrollEl.value);
+    }),
+  { flush: "post" },
+);
 
 // text snippets, loaded once per visible text hit
 const snippets = reactive<Record<string, string>>({});
-watch(hits, (list) => {
-  for (const h of list)
-    if (h.kind === "text" && !(h.ref in snippets)) {
-      snippets[h.ref] = "";
-      void textOf(h.ref).then((t) => (snippets[h.ref] = t.slice(0, 240)));
-    }
-});
+watch(
+  hits,
+  (list) => {
+    for (const h of list)
+      if (h.kind === "text" && !(h.ref in snippets)) {
+        snippets[h.ref] = "";
+        void textOf(h.ref).then((t) => (snippets[h.ref] = t.slice(0, 240)));
+      }
+  },
+  { immediate: true },
+);
 
-// The grid's column count comes from the results box's own width and the zoom (target cell size),
-// measured with a ResizeObserver: under Vue nodes the node doesn't call onResize on DOM resizes.
-const ZOOM_MIN = 56;
-const ZOOM_MAX = 240;
-const ZOOM_STEP = 24;
+// Column count from the results box's own width and the zoom, measured with a ResizeObserver:
+// under Vue nodes the node doesn't call onResize on DOM resizes.
 const GAP = 5;
 const resultsEl = ref<HTMLElement | null>(null);
 const boxWidth = ref(400);
-const zoom = ref(clampZoom(Number(props.node?.properties?.qeZoom ?? 104)));
-function clampZoom(z: number) {
-  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number.isFinite(z) ? z : 104));
-}
-function setZoom(z: number) {
-  zoom.value = clampZoom(z);
-  if (props.node?.properties) props.node.properties.qeZoom = zoom.value;
-}
 const cols = computed(() => Math.max(1, Math.floor((boxWidth.value - 8 + GAP) / (zoom.value + GAP))));
 const cell = computed(() => (boxWidth.value - 8 - GAP * (cols.value - 1)) / cols.value);
 const thumbSize = computed(() => (cell.value > 150 ? 384 : cell.value > 90 ? 256 : 160));
 let ro: ResizeObserver | null = null;
 
-const isImageRef = (r: string) => IMAGE_EXT.test(r);
-const baseName = (r: string) => r.split("/").pop() ?? r;
-
-const emptyIcon = computed(() =>
-  !state.folders.length ? "mdi mdi-folder-plus-outline" : "mdi mdi-magnify",
-);
+const emptyIcon = computed(() => (!state.folders.length ? "mdi mdi-folder-plus-outline" : "mdi mdi-magnify"));
 const emptyTitle = computed(() => {
   if (!models.value.length) return "No model";
   if (!state.folders.length) return "Pick folders to search";
   if (linkedQuery.value) return "Queue the node to search";
-  if (!state.query.trim()) return "Type to search";
+  if (!state.query.trim()) return "Type, or drop an image, to search";
   return searching.value ? "Searching…" : "Nothing found";
 });
 
-// ----- host wiring ---------------------------------------------------------------------------
+// ----- drag a result out ---------------------------------------------------------------------
+
+/** Drag an image result onto a Load Image node, or onto the canvas. A file that's already in
+ *  input/ or output/ goes as a native Comfy asset (the loader points at it, no re-upload); one in
+ *  a symlinked folder, which core loaders refuse, goes as a URL and is uploaded on drop. */
+function onDragStart(e: DragEvent, h: Hit) {
+  if (h.kind !== "image") return;
+  const [type, ...rest] = h.ref.split("/");
+  const filename = rest.pop() ?? "";
+  const linked = store.rowOf(h.folder)?.linked;
+  const img = (e.currentTarget as HTMLElement).querySelector("img");
+  setMediaDragData(
+    e,
+    {
+      url: fileUrl(h.ref),
+      filename,
+      ...(linked || (type !== "input" && type !== "output")
+        ? {}
+        : { type: type as "input" | "output", subfolder: rest.join("/") }),
+    },
+    img,
+  );
+}
+
+// ----- drop an image in to search by it -------------------------------------------------------
+
+const dropping = ref(false);
+function onDragOver(e: DragEvent) {
+  if (!hasMediaDrop(e) || linkedQuery.value) return;
+  if (dragStartedInSearch()) return; // our own result card being dragged out isn't a query
+  e.preventDefault();
+  dropping.value = true;
+}
+function onDragLeave(e: DragEvent) {
+  const root = rootEl.value?.el;
+  if (!root || !root.contains(e.relatedTarget as Node | null)) dropping.value = false;
+}
+
+/** Desktop files land in temp/ (not input/): a query image isn't something to keep or index. */
+async function uploadTemp(file: File): Promise<string> {
+  const body = new FormData();
+  body.append("image", file);
+  body.append("type", "temp");
+  body.append("subfolder", "embeddingquery");
+  const res = await api.fetchApi("/upload/image", { method: "POST", body });
+  if (!res.ok) throw new Error(`upload failed: HTTP ${res.status}`);
+  const d = (await res.json()) as { name: string; subfolder?: string; type?: string };
+  return [d.type || "temp", d.subfolder, d.name].filter(Boolean).join("/");
+}
+async function onDrop(e: DragEvent) {
+  dropping.value = false;
+  if (!hasMediaDrop(e) || linkedQuery.value || dragStartedInSearch()) return;
+  e.preventDefault(); // also stops ComfyUI importing the file into the graph
+  e.stopPropagation();
+  const add = e.shiftKey;
+  try {
+    const refs = (await readMediaDrop(e, "", (f) => uploadTemp(f))).filter((r) => isImageRef(r));
+    if (!refs.length) return;
+    set({ similar: add ? [...new Set([...state.similar, ...refs])] : refs, selected: null });
+  } catch (err) {
+    error.value = String((err as Error).message ?? err);
+  }
+}
+
+// ----- pop out (ZenKit) ----------------------------------------------------------------------
+
+const POPPED = "qePoppedOut";
+const self = getCurrentInstance()!.type; // the panel mounts this same component
+const handles = new WeakMap<object, ZenPanelHandle>();
+const quiet = new WeakSet<object>(); // panels closed because the node left
+/** The node body shows a placeholder while its panel is on screen. */
+const poppedHere = computed(() => !props.panel && panelOpen.value);
+
+function panelId() {
+  const node = props.node;
+  const graph = node?.graph?.id;
+  return graph ? `embeddingquery:${graph}:${node?.id}` : `embeddingquery.${node?.id}`;
+}
+function remember(popped: boolean) {
+  const node = props.node;
+  if (!node) return;
+  node.properties ??= {};
+  if (Boolean(node.properties[POPPED]) === popped) return;
+  node.properties[POPPED] = popped;
+  node.graph?.change?.();
+}
+function popOut(reveal = false) {
+  const node = props.node;
+  if (!node) return;
+  const existing = handles.get(node);
+  if (existing) return existing.focus();
+  const handle = openZenPanel(
+    {
+      id: panelId(),
+      title: "Embedding Search",
+      icon: "mdi mdi-image-search-outline",
+      width: 760,
+      height: 820,
+      minWidth: 380,
+      minHeight: 420,
+      persist: true,
+      reveal,
+      props: { widget: props.widget, node: props.node, panel: true },
+      onClose: () => {
+        handles.delete(node);
+        if (quiet.delete(node)) return; // the node left: stay "popped" for the next load
+        remember(false); // the user closed it
+      },
+    },
+    self,
+  );
+  if (!handle) return;
+  handles.set(node, handle);
+  remember(true);
+  const previous = node.onRemoved;
+  node.onRemoved = function (this: unknown, ...args: unknown[]) {
+    const h = handles.get(node);
+    if (h) {
+      quiet.add(node);
+      h.close({ keep: true });
+    }
+    return previous?.apply(this, args);
+  };
+}
+
+let header: NodeHeaderButtonHandle | null = null;
+function addPopButton() {
+  if (props.panel || header || !hasZenPanels()) return !!header;
+  header = addNodeHeaderButton(props.node, rootEl.value?.el ?? null, {
+    icon: "mdi mdi-open-in-new",
+    text: "⧉",
+    title: "Open in a window (ZenKit)",
+    onClick: () => popOut(true),
+  });
+  return true;
+}
+
+// ----- mount ---------------------------------------------------------------------------------
 
 onMounted(() => {
-  const w = props.widget;
-  if (w) {
-    const prev = w.callback;
-    // eslint-disable-next-line vue/no-mutating-props -- the host widget object
-    w.callback = function (this: unknown, v: unknown) {
-      if (v && typeof v === "object" && "__qeRun" in (v as object)) {
-        onRun((v as { __qeRun: RunResult | null }).__qeRun);
-        return; // a run result is not a value: never persist it
-      }
-      if (prev) prev.call(this, v);
-      if (!ownWrite) Object.assign(state, toState(v)); // e.g. workflow load / undo
-    };
-  }
-  const node = props.node;
-  if (node) {
-    const prevConn = node.onConnectionsChange;
-    node.onConnectionsChange = function (this: unknown, ...args: unknown[]) {
-      prevConn?.apply(this, args);
-      readLinks();
-    };
-  }
+  if (props.panel) panelOpen.value = true;
   if (resultsEl.value && typeof ResizeObserver !== "undefined") {
     ro = new ResizeObserver(() => (boxWidth.value = resultsEl.value?.clientWidth ?? boxWidth.value));
     ro.observe(resultsEl.value);
     boxWidth.value = resultsEl.value.clientWidth || boxWidth.value;
   }
-  readLinks();
-  api.addEventListener(JOB_EVENT, onJobEvent);
-  void refreshFolders().then(() => liveSearch());
+  if (props.panel) return;
+  // ZenKit may install after this node mounts (workflow load): retry for up to 10 s, then reopen
+  // the panel if the node was popped out when the workflow was saved.
+  let tries = 0;
+  const attempt = () => {
+    if (!addPopButton() && ++tries < 40) return void setTimeout(attempt, 250);
+    if (header && props.node?.properties?.[POPPED] && !handles.has(props.node)) popOut(false);
+  };
+  attempt();
 });
 onBeforeUnmount(() => {
-  api.removeEventListener(JOB_EVENT, onJobEvent);
+  if (props.panel) panelOpen.value = false;
   ro?.disconnect();
-  inflight?.abort();
-  if (timer) clearTimeout(timer);
+  header?.destroy();
+});
+// the results box is re-created when the node body comes back from a pop-out
+watch(resultsEl, (el) => {
+  ro?.disconnect();
+  if (el && ro) {
+    ro.observe(el);
+    boxWidth.value = el.clientWidth || boxWidth.value;
+  }
 });
 </script>
-
 <style scoped>
 .qe {
   font-size: 11px;
@@ -1378,5 +1348,59 @@ onBeforeUnmount(() => {
 }
 .qe-topk {
   width: 76px;
+}
+/* ----- pop-out, drop, fit, subtree rows ----- */
+.qe {
+  position: relative;
+}
+.qe-popped {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--zen-muted);
+}
+.qe-popped > .mdi {
+  font-size: 28px;
+}
+.qe-dropmask {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 2px dashed var(--zen-accent);
+  border-radius: var(--zen-radius);
+  background: color-mix(in srgb, var(--zen-bg, #111) 80%, transparent);
+  color: var(--zen-text);
+  font-weight: 600;
+  pointer-events: none;
+}
+.qe-dropmask > .mdi {
+  font-size: 26px;
+  color: var(--zen-accent);
+}
+.qe-dropmask small {
+  color: var(--zen-muted);
+  font-weight: 400;
+}
+.qe-grid.fit-contain .qe-hit img {
+  object-fit: contain;
+  background: color-mix(in srgb, var(--zen-text) 4%, var(--zen-surface));
+}
+.qe-hit[draggable="true"] {
+  cursor: grab;
+}
+/* some of a subtree searched: a ring rather than a filled dot */
+.qe-partly :deep(*) {
+  box-shadow: inset 0 0 0 2px var(--zen-accent);
+}
+.qe-fcount.summed {
+  opacity: 0.75;
 }
 </style>
