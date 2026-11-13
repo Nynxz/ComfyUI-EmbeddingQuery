@@ -188,8 +188,8 @@
           v-for="h in hits"
           :key="h.ref"
           class="qe-hit"
-          :class="{ picked: h.ref === state.selected, auto: h.ref === autoPick }"
-          :title="`${h.ref}\nscore ${h.score.toFixed(3)}`"
+          :class="{ picked: h.ref === state.selected, auto: !state.selected && h.ref === autoPick }"
+          :title="`${h.ref}\nscore ${h.score.toFixed(3)}${!state.selected && h.ref === autoPick ? '\nOutput of the last run (top result, nothing pinned)' : ''}`"
           @click="pick(h.ref)"
         >
           <img v-if="h.kind === 'image'" :src="thumbUrl(h.ref, thumbSize)" loading="lazy" draggable="false" />
@@ -665,6 +665,8 @@ watch(
   (now, before) => liveSearch(now[0] !== before?.[0] ? 350 : 0),
 );
 
+// The dashed "auto" outline marks the top hit a run output because nothing was pinned. A pin
+// overrides it, so it only shows while nothing is pinned (the class binding checks that too).
 function pick(ref: string) {
   set({ selected: state.selected === ref ? null : ref });
 }
