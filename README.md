@@ -13,7 +13,8 @@ It's one node, **Embedding Search**, with the whole UI on the node body (ZenKit 
   row stands for its whole subtree: turning on or indexing `input` covers everything under it
   (each folder keeps its own index, so nothing is embedded twice), and its status sums the subtree
   (✓ all indexed, `3/7` partly). Turning on a folder without an index starts indexing it; `⋯` has
-  rebuild and delete.
+  rebuild and delete. **Ctrl/⌘-click** a folder's dot to search only that folder (and its
+  subfolders); Ctrl-click it again to get your previous selection back.
 - **Query**: type to search live (no queueing), filtered to all / images / text, or **drop an
   image** onto the node to search by it (shift-drop adds to the set). "Find similar" on a result
   searches by that file's stored embedding without running the model; shift-click it on more

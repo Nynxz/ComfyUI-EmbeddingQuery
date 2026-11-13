@@ -121,12 +121,15 @@
             <i class="mdi" :class="isCollapsed(row.path) ? 'mdi-chevron-right' : 'mdi-chevron-down'" />
           </button>
           <span v-else class="qe-chev" />
-          <ZenDot
-            :class="{ 'qe-partly': partlyOn(row.path) }"
-            :model-value="isOn(row.path)"
-            :title="dotTitle(row)"
-            @update:model-value="setOn(row.path, $event)"
-          />
+          <!-- ctrl/⌘-click is "search only this": caught in capture, before the dot toggles -->
+          <span class="qe-dotwrap" @click.capture="onDotClick($event, row)">
+            <ZenDot
+              :class="{ 'qe-partly': partlyOn(row.path) }"
+              :model-value="isOn(row.path)"
+              :title="dotTitle(row)"
+              @update:model-value="setOn(row.path, $event)"
+            />
+          </span>
           <i
             v-if="isRoot(row.path)"
             class="mdi qe-froot"
@@ -461,6 +464,7 @@ const {
   isOn,
   partlyOn,
   setOn,
+  solo,
   isQueued,
   isTree,
   counts,
@@ -521,11 +525,19 @@ const settingsOpen = ref(false);
 
 // ----- folder rows ---------------------------------------------------------------------------
 
+const SOLO_KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
 function dotTitle(row: FolderRow) {
   const tree = isTree(row) ? " (with its subfolders)" : "";
-  if (isOn(row.path)) return `Searched${tree}: click to leave out`;
-  if (partlyOn(row.path)) return "Some subfolders are searched: click to include all of them";
-  return `Not searched: click to include${tree} (indexes what needs it)`;
+  const solo = `\n${SOLO_KEY}-click: search only this${tree}; again to undo`;
+  if (isOn(row.path)) return `Searched${tree}: click to leave out${solo}`;
+  if (partlyOn(row.path)) return `Some subfolders are searched: click to include all of them${solo}`;
+  return `Not searched: click to include${tree} (indexes what needs it)${solo}`;
+}
+function onDotClick(e: MouseEvent, row: FolderRow) {
+  if (!(e.ctrlKey || e.metaKey)) return; // a plain click toggles as usual
+  e.stopPropagation();
+  e.preventDefault();
+  solo(row.path);
 }
 function countTitle(row: FolderRow) {
   const c = counts(row);
@@ -1399,6 +1411,10 @@ watch(resultsEl, (el) => {
 /* some of a subtree searched: a ring rather than a filled dot */
 .qe-partly :deep(*) {
   box-shadow: inset 0 0 0 2px var(--zen-accent);
+}
+.qe-dotwrap {
+  display: inline-flex;
+  flex: none;
 }
 .qe-fcount.summed {
   opacity: 0.75;

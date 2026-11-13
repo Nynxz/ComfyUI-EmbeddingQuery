@@ -196,6 +196,28 @@ function createStore(widget: DOMWidget | undefined, node: NodeLike | undefined) 
       if (todo.length) void indexFolders(todo);
     }
   }
+  /** Ctrl-click: search only this folder (and its subtree). Again on the same folder: back to the
+   *  selection from before. The previous selection lives on the node, so it survives a reload. */
+  function solo(p: string) {
+    const r = rowOf(p);
+    if (!r) return;
+    const only = targets(r).map((x) => x.path);
+    if (!only.length) return;
+    const current = [...state.folders].sort().join("\n");
+    const before = prop<string[] | null>("qeBeforeSolo", null);
+    if (current === [...only].sort().join("\n") && before) {
+      saveProp("qeBeforeSolo", null);
+      set({ folders: before });
+      return;
+    }
+    saveProp("qeBeforeSolo", [...state.folders]);
+    set({ folders: only });
+    const todo = only.filter((x) => {
+      const row = rowOf(x);
+      return row && hasFiles(row) && ownState(row) !== "ready";
+    });
+    if (todo.length) void indexFolders(todo);
+  }
   const isQueued = (p: string) => (job.value.running && job.value.folder === p) || job.value.queued.includes(p);
 
   function ownState(r: FolderRow): RowState {
@@ -483,6 +505,7 @@ function createStore(widget: DOMWidget | undefined, node: NodeLike | undefined) 
     visibleFolders,
     isOn,
     setOn,
+    solo,
     isQueued,
     isTree,
     hasFiles,
